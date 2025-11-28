@@ -1,16 +1,15 @@
-# src/security.py  (FULL-PRO, listo para pegar)
+
 import re
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from preprocessing import clean_text  # import local (dentro de src)
+from preprocessing import clean_text 
 
 analyzer = SentimentIntensityAnalyzer()
 
-# -----------------------
-# REGEX & DICTIONARIES
-# -----------------------
+
+
 REGEX_EMAIL = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
-REGEX_PHONE = r"\b3\d{2}\d{7}\b"         # 10 dígitos: 3xx xxx xxxx -> 3 + 9 dígitos total 10.
-REGEX_DNI = r"\b[1-9]\d{6,8}\b"         # 7-9 dígitos típicos (ajustable)
+REGEX_PHONE = r"\b3\d{2}\d{7}\b"        
+REGEX_DNI = r"\b[1-9]\d{6,8}\b"        
 REGEX_IP = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
 REGEX_TOKEN = r"(?i)(token|bearer|authorization)[:=]\s*[\w\-\.]+"
 REGEX_URL = r"http[s]?://\S+|bit\.ly|tinyurl|\.ru|\.xyz|\.tk"
@@ -45,9 +44,7 @@ PHISHING_MEDIUM = [
 ]
 
 
-# -----------------------
-# 1) PII DETECTION & MASK
-# -----------------------
+
 def detect_pii(text: str) -> dict:
     """
     Devuelve diccionario con listas de coincidencias de PII y leaks.
@@ -72,21 +69,19 @@ def pii_mask(text: str) -> str:
         return text
 
     masked = text
-    # Reemplazos con espacio antes y después si es necesario
+
     masked = re.sub(REGEX_EMAIL, " [MASKED_EMAIL] ", masked)
     masked = re.sub(REGEX_PHONE, " [MASKED_PHONE] ", masked)
     masked = re.sub(REGEX_DNI, " [MASKED_DNI] ", masked)
     masked = re.sub(REGEX_IP, " [MASKED_IP] ", masked)
     masked = re.sub(REGEX_TOKEN, " [MASKED_TOKEN] ", masked)
 
-    # Normalizar espacios (evitar dobles espacios)
+
     masked = re.sub(r"\s+", " ", masked).strip()
     return masked
 
 
-# -----------------------
-# 2) PHISHING DETECTION (scoring)
-# -----------------------
+
 def detect_phishing(text: str) -> dict:
     """
     Scoring simple por reglas:
@@ -114,7 +109,7 @@ def detect_phishing(text: str) -> dict:
             found.append(w)
             score += 12
 
-    # URLs / shorteners
+   
     if re.search(REGEX_URL, t):
         found.append("url_sospechosa")
         score += 40
@@ -124,9 +119,7 @@ def detect_phishing(text: str) -> dict:
     return {"score": score, "found": found, "level": level, "is_phishing": score >= 30}
 
 
-# -----------------------
-# 3) SENTIMENT (ajustado)
-# -----------------------
+
 def sentiment_score(text: str) -> dict:
     """
     Devuelve {'score': float, 'label': str}
@@ -139,12 +132,12 @@ def sentiment_score(text: str) -> dict:
     clean = clean_text(text)
     base = analyzer.polarity_scores(clean)["compound"]
 
-    # Si detectamos phishing en el texto, reducimos hacia negativo (pero no forzamos extremos)
+ 
     phishing = detect_phishing(text)
     if phishing["score"] >= 30:
         base = min(base, -0.25)
 
-    # Etiqueta
+
     if base <= -0.5:
         label = "Muy Negativo"
     elif base <= -0.1:
@@ -159,9 +152,7 @@ def sentiment_score(text: str) -> dict:
     return {"score": round(base, 4), "label": label}
 
 
-# -----------------------
-# 4) AGGRESSIVENESS DETECTION
-# -----------------------
+
 def aggressiveness_score(text: str) -> dict:
     if not isinstance(text, str):
         return {"score": 0, "found": [], "is_aggressive": False}
@@ -171,9 +162,7 @@ def aggressiveness_score(text: str) -> dict:
     return {"score": score, "found": hits, "is_aggressive": score >= 50}
 
 
-# -----------------------
-# 5) FULL PIPELINE (combinado)
-# -----------------------
+
 def full_security_pipeline(text: str) -> dict:
     """
     Ejecuta todo y devuelve un objeto compuesto.
@@ -184,10 +173,10 @@ def full_security_pipeline(text: str) -> dict:
     pii = detect_pii(text)
     masked = pii_mask(text)
     phishing = detect_phishing(text)
-    sentiment = sentiment_score(text)  # note: sentiment_strict uses detect_phishing inside
+    sentiment = sentiment_score(text)  
     aggression = aggressiveness_score(text)
 
-    # Enriquecimiento: si es phishing, forzamos que sentiment.label no sea positivo
+
     if phishing["is_phishing"] and sentiment["score"] > -0.1:
         sentiment["score"] = min(sentiment["score"], -0.25)
         sentiment["label"] = "Negativo"
