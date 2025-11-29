@@ -1,188 +1,189 @@
 import re
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from preprocessing import clean_text  # import local (dentro de src)
+from typing import Tuple, List, Optional
+from abc import ABC, abstractmethod
 
-analyzer = SentimentIntensityAnalyzer()
-
-
-REGEX_EMAIL = r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b"
-REGEX_PHONE = r"\b3\d{2}\d{7}\b"         
-REGEX_DNI = r"\b[1-9]\d{6,8}\b"         
-REGEX_IP = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
-REGEX_TOKEN = r"(?i)(token|bearer|authorization)[:=]\s*[\w\-\.]+"
-REGEX_URL = r"http[s]?://\S+|bit\.ly|tinyurl|\.ru|\.xyz|\.tk"
-
-AGGRESSIVE_WORDS = [
-    "mierda", "estupido", "inutil", "asco", "maldito", "porqueria",
-    "imbecil", "hpt", "hp", "terrible", "cansado", "frustrado",
-    "inaceptable", "horrible", "odioso", "odie"
+# --- NUEVA FUNCIONALIDAD: LÉXICO AGRESIVO ---
+# Palabras clave para detectar lenguaje ofensivo o agresivo del cliente hacia el agente.
+_AGGRESSIVE_LEXICON = [
+    r'\b(grosería|trato\s+feo|mala\s+actitud|contestación\s+fea|regañar|tono\s+feo|maltrato|falta\s+de\s+respeto|actitud\s+horrible|atención\s+terrible)\b'
 ]
-
-PHISHING_STRONG = [
-    "su cuenta ha sido suspendida",
-    "verifique su identidad",
-    "alerta de seguridad",
-    "actividad inusual",
-    "bloqueo",
-    "hackearon",
-    "intruso detectado",
-    "restablecer su contraseña",
-    "fraude",
-    "cuenta bloqueada"
-]
-
-PHISHING_MEDIUM = [
-    "correo sospechoso",
-    "sospechoso",
-    "problema de seguridad",
-    "riesgo",
-    "advertencia",
-    "comprometido",
-    "actividad sospechosa"
-]
+# Las expresiones regulares se compilan para un mejor rendimiento.
+_AGGRESSIVE_PATTERNS = [re.compile(p) for p in _AGGRESSIVE_LEXICON]
+# ---------------------------------------------
 
 
+# --- DETECTORES DE SEGURIDAD (IMPLEMENTACIONES CONCRETAS) ---
 
-def detect_pii(text: str) -> dict:
+class SecurityDetector(ABC):
     """
-    Devuelve diccionario con listas de coincidencias de PII y leaks.
+    Clase base abstracta para detectores de seguridad.
     """
-    if not isinstance(text, str):
-        return {"email": [], "phone": [], "dni": [], "ip": [], "token": []}
+    @abstractmethod
+    def detect(self, text: str) -> bool:
+        """Detecta si el texto contiene elementos de seguridad específicos."""
+        pass
 
-    return {
-        "email": re.findall(REGEX_EMAIL, text),
-        "phone": re.findall(REGEX_PHONE, text),
-        "dni": re.findall(REGEX_DNI, text),
-        "ip": re.findall(REGEX_IP, text),
-        "token": re.findall(REGEX_TOKEN, text),
-    }
+# --- NUEVA FUNCIONALIDAD: DETECTOR DE LENGUAJE AGRESIVO ---
+class AggressiveLanguageDetector(SecurityDetector):
+    """Detector de lenguaje agresivo o inapropiado."""
+    
+    def detect(self, text: str) -> bool:
+        """Detecta si el texto contiene patrones de lenguaje agresivo."""
+        text_lower = text.lower()
+        
+        # Iterar sobre los patrones compilados
+        for pattern in _AGGRESSIVE_PATTERNS:
+            if pattern.search(text_lower):
+                return True
+        return False
+# -----------------------------------------------------------
 
 
-def pii_mask(text: str) -> str:
-    """
-    Reemplaza PII por [MASKED_...], cuidando espacios para que no quede pegado.
-    """
-    if not isinstance(text, str):
+class PhishingDetector(SecurityDetector):
+    """Detector de intentos de phishing en tickets."""
+    
+    def __init__(self):
+        """Inicializa el detector con patrones de phishing conocidos."""
+        # Patrones comunes de phishing en español e inglés
+        self.phishing_patterns = [
+            r'click\s+(here|aquí|acá)',
+            r'verify\s+your\s+account',
+            r'verificar?\s+tu\s+cuenta',
+            r'reset\s+your\s+password',
+            r'restablecer?\s+contraseña',
+            r'urgent(ly)?',
+            r'urgente(mente)?',
+            r'deactivated?',
+            r'desactivad[oa]',
+            r'suspend(ed)?',
+            r'suspend(ido|ida)',
+            r'immediately',
+            r'inmediatamente',
+        ]
+    
+    def detect(self, text: str) -> bool:
+        """Detecta si el texto contiene patrones de phishing."""
+        text_lower = text.lower()
+        
+        for pattern in self.phishing_patterns:
+            if re.search(pattern, text_lower):
+                return True
+        
+        return False
+
+
+class PIIDetector(SecurityDetector):
+    """Detector de información personal identificable (PII)."""
+
+    # Definimos el patrón de PII completo fuera de la detección
+    # para usarlo también en la función de enmascaramiento.
+    # Patrones: Emails, Teléfonos (Col), Cédulas (Col).
+    _EMAIL_PATTERN = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    _PHONE_PATTERN = r'\b3\d{2}[-\s]?\d{3}[-\s]?\d{4}\b'
+    _CC_PATTERN = r'\b\d{8,10}\b'
+    _PII_PATTERN = '|'.join([_EMAIL_PATTERN, _PHONE_PATTERN]) # Unimos solo email y teléfono para detección simple.
+
+    def __init__(self):
+        """Inicializa el detector con expresiones regulares para PII."""
+        # No requiere inicialización adicional, los patrones son constantes de clase.
+        pass
+    
+    def detect(self, text: str) -> bool:
+        """Detecta si el texto contiene información personal."""
+        
+        # 1. Buscar Email o Teléfono (patrones directos)
+        if re.search(self._PII_PATTERN, text):
+            return True
+        
+        # 2. Buscar Cédula (solo si hay contexto de identificación)
+        if re.search(r'(c\.?c\.?|cédula|cedula|id|identification|identificaci[oó]n)', text.lower()):
+            if re.search(self._CC_PATTERN, text):
+                return True
+        
+        return False
+
+    def mask(self, text: str) -> str:
+        """Enmascara la información PII encontrada en el texto."""
+        
+        # Enmascara emails y teléfonos
+        text = re.sub(self._EMAIL_PATTERN, '[EMAIL_MASKED]', text)
+        text = re.sub(self._PHONE_PATTERN, '[PHONE_MASKED]', text)
+
+        text = re.sub(self._CC_PATTERN, '[ID_MASKED]', text)
+        
         return text
 
-    masked = text
-  
-    masked = re.sub(REGEX_EMAIL, " [MASKED_EMAIL] ", masked)
-    masked = re.sub(REGEX_PHONE, " [MASKED_PHONE] ", masked)
-    masked = re.sub(REGEX_DNI, " [MASKED_DNI] ", masked)
-    masked = re.sub(REGEX_IP, " [MASKED_IP] ", masked)
-    masked = re.sub(REGEX_TOKEN, " [MASKED_TOKEN] ", masked)
 
-    # Normalizar espacios (evitar dobles espacios)
-    masked = re.sub(r"\s+", " ", masked).strip()
-    return masked
+# --- ORQUESTADOR ---
+class SecurityAnalyzer:
+    """Orquestador de análisis de seguridad."""
+    
+    def __init__(self, phishing_detector: SecurityDetector, pii_detector: PIIDetector, aggressive_detector: SecurityDetector):
+        """
+        Inicializa el analizador con detectores inyectados.
+        """
+        self.phishing_detector = phishing_detector
+        self.pii_detector = pii_detector
+        self.aggressive_detector = aggressive_detector 
+    
+    def analyze(self, text: str) -> Tuple[bool, bool, bool]:
+        """Analiza el texto para detectar amenazas de seguridad."""
+        is_phishing = self.phishing_detector.detect(text)
+        has_pii = self.pii_detector.detect(text)
+        is_aggressive = self.aggressive_detector.detect(text)
+        
+        return is_phishing, has_pii, is_aggressive
 
+    
+    def detect_pii(self, text: str) -> bool:
+        """Expone la detección de PII."""
+        return self.pii_detector.detect(text)
 
+    def detect_phishing(self, text: str) -> bool:
+        """Expone la detección de phishing."""
+        return self.phishing_detector.detect(text)
+    
+    # --- EXPOSICIÓN DE DETECCIÓN AGRESIVA ---
+    def detect_aggressive_language(self, text: str) -> bool:
+        """Expone la detección de lenguaje agresivo."""
+        return self.aggressive_detector.detect(text)
+    # -------------------------------------------------------------
 
-def detect_phishing(text: str) -> dict:
-    """
-    Scoring simple por reglas:
-    - strong words: +30
-    - medium words: +12
-    - suspicious URL: +40
-    Resultado: score 0-100, level BAJO/MEDIO/ALTO, is_phishing boolean.
-    """
-    if not isinstance(text, str):
-        return {"score": 0, "found": [], "level": "BAJO", "is_phishing": False}
+    def mask_pii(self, text: str) -> str:
+        """Expone el enmascaramiento de PII."""
 
-    t = text.lower()
-    found = []
-    score = 0
-
-
-    for w in PHISHING_STRONG:
-        if w in t:
-            found.append(w)
-            score += 30
-
-
-    for w in PHISHING_MEDIUM:
-        if w in t:
-            found.append(w)
-            score += 12
-
-
-    if re.search(REGEX_URL, t):
-        found.append("url_sospechosa")
-        score += 40
-
-    score = min(score, 100)
-    level = "ALTO" if score >= 70 else ("MEDIO" if score >= 30 else "BAJO")
-    return {"score": score, "found": found, "level": level, "is_phishing": score >= 30}
+        return self.pii_detector.mask(text)
 
 
+# --- FACTORY ---
+def create_security_analyzer() -> SecurityAnalyzer:
+    """Crea una instancia de SecurityAnalyzer con detectores por defecto."""
+    phishing_detector = PhishingDetector()
+    pii_detector = PIIDetector()
+    aggressive_detector = AggressiveLanguageDetector() 
+    
 
-def sentiment_score(text: str) -> dict:
-    """
-    Devuelve {'score': float, 'label': str}
-    - Usa VADER
-    - Si hay señales de phishing, forzamos sesgo negativo leve
-    """
-    if not isinstance(text, str):
-        return {"score": 0.0, "label": "Neutral"}
-
-    clean = clean_text(text)
-    base = analyzer.polarity_scores(clean)["compound"]
-
- 
-    phishing = detect_phishing(text)
-    if phishing["score"] >= 30:
-        base = min(base, -0.25)
+    return SecurityAnalyzer(phishing_detector, pii_detector, aggressive_detector) 
 
 
-    if base <= -0.5:
-        label = "Muy Negativo"
-    elif base <= -0.1:
-        label = "Negativo"
-    elif base < 0.1:
-        label = "Neutral"
-    elif base < 0.5:
-        label = "Positivo"
-    else:
-        label = "Muy Positivo"
+_analyzer = create_security_analyzer() 
 
-    return {"score": round(base, 4), "label": label}
+# --- FUNCIONES DE CONVENIENCIA GLOBALES ---
 
+def detect_pii(text: str):
+    """Llama al método detect_pii del analizador."""
+    return _analyzer.detect_pii(text)
 
+def mask_pii(text: str):
+    """Llama al método mask_pii del analizador."""
+    return _analyzer.mask_pii(text)
 
-def aggressiveness_score(text: str) -> dict:
-    if not isinstance(text, str):
-        return {"score": 0, "found": [], "is_aggressive": False}
-    t = text.lower()
-    hits = [w for w in AGGRESSIVE_WORDS if w in t]
-    score = min(len(hits) * 25, 100)
-    return {"score": score, "found": hits, "is_aggressive": score >= 50}
+def detect_phishing(text: str):
+    """Llama al método detect_phishing del analizador."""
+    return _analyzer.detect_phishing(text)
 
-
-
-def full_security_pipeline(text: str) -> dict:
-    """
-    Ejecuta todo y devuelve un objeto compuesto.
-    """
-    if not isinstance(text, str):
-        return {}
-
-    pii = detect_pii(text)
-    masked = pii_mask(text)
-    phishing = detect_phishing(text)
-    sentiment = sentiment_score(text)  
-    aggression = aggressiveness_score(text)
-
-
-    if phishing["is_phishing"] and sentiment["score"] > -0.1:
-        sentiment["score"] = min(sentiment["score"], -0.25)
-        sentiment["label"] = "Negativo"
-
-    return {
-        "pii": pii,
-        "masked": masked,
-        "phishing": phishing,
-        "sentiment": sentiment,
-        "aggressiveness": aggression
-    }
+# --- FUNCIÓN GLOBAL AGRESIVA ---
+def detect_aggressive_language(text: str):
+    """Llama al método detect_aggressive_language del analizador."""
+    return _analyzer.detect_aggressive_language(text)
+# ---------------------------------------------------

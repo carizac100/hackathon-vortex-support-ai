@@ -1,16 +1,4 @@
-"""
-Dashboard de Soporte Inteligente - Vortex AI
-
-Dashboard interactivo en Streamlit con 3 vistas principales:
-1. Análisis de ticket individual (Usuario de negocio)
-2. Gráficos y distribuciones (Equipo de datos)
-3. Análisis de factores de churn (Account Manager)
-
-Ejecutar con: python3 -m streamlit run src/dashboard_app.py
-
-Owner: Product Team
-"""
-
+# dashboard_app.py
 import sys
 from pathlib import Path
 import pandas as pd
@@ -20,14 +8,17 @@ import plotly.express as px
 import plotly.graph_objects as go
 import base64
 
-# Agregar src al path para imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 from nlp_pipeline import create_pipeline
 from db_utils import get_connection
+from preprocessing import sentiment_score
+from preprocessing import clean_text
+# --- CAMBIO 1: IMPORTAR EL DETECTOR DE LENGUAJE AGRESIVO ---
+from security import detect_pii, mask_pii, detect_phishing, detect_aggressive_language 
+# -------------------------------------------------------------
 
 
-# Configuración de la página
 st.set_page_config(
     page_title="Neuro Support",
     page_icon="🧠",
@@ -35,12 +26,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilos personalizados - Tema Neuro Support (Dark Blue/Tech)
+
 st.markdown("""
 <style>
 
 /* ===========================
-   FUENTES
+    FUENTES
 =========================== */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap');
 
@@ -49,7 +40,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   BACKGROUND GENERAL
+    BACKGROUND GENERAL
 =========================== */
 .stApp {
     background: radial-gradient(circle at top left, #00111a, #000c12 40%, #00060c 90%);
@@ -57,7 +48,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   SIDEBAR
+    SIDEBAR
 =========================== */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #000B13 0%, #00131E 100%);
@@ -79,7 +70,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   HEADER NEURO SUPPORT
+    HEADER NEURO SUPPORT
 =========================== */
 .neuro-header {
     font-family: 'Inter', sans-serif;
@@ -133,7 +124,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   HEADERS INTERNOS
+    HEADERS INTERNOS
 =========================== */
 .view-header {
     font-size: 2rem;
@@ -146,7 +137,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   CARDS
+    CARDS
 =========================== */
 .metric-card {
     background: rgba(255,255,255,0.02);
@@ -163,7 +154,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   BOTONES
+    BOTONES
 =========================== */
 .stButton > button {
     background: linear-gradient(90deg, #0077B6, #0096C7);
@@ -181,7 +172,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   INPUTS
+    INPUTS
 =========================== */
 .stTextInput > div > input,
 .stNumberInput input {
@@ -197,7 +188,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   ALERTAS
+    ALERTAS
 =========================== */
 .warning-box {
     background-color: rgba(255, 193, 7, 0.08);
@@ -221,7 +212,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   FOOTER
+    FOOTER
 =========================== */
 .footer {
     margin-top: 2rem;
@@ -231,7 +222,7 @@ html, body, [class*="css"] {
 }
 
 /* ===========================
-   TEXTO Y VISIBILIDAD
+    TEXTO Y VISIBILIDAD
 =========================== */
 /* Labels de todos los widgets (Inputs, Selects, Sliders) */
 .stTextArea label, .stNumberInput label, .stTextInput label, .stSelectbox label, .stDateInput label, .stMultiSelect label {
@@ -300,18 +291,18 @@ html, body, [class*="css"] {
 def load_pipeline():
     """
     Carga el pipeline de NLP con modelos entrenados.
-    
+
     Usa @st.cache_resource para cargar una sola vez.
     """
     # Obtener path absoluto basado en la ubicación de este archivo
     current_file = Path(__file__).parent
     models_dir = current_file.parent / "models"
-    
+
     if not models_dir.exists() or not (models_dir / "ticket_classifier.pkl").exists():
         st.error(f"⚠️ Los modelos no están entrenados. Ruta buscada: {models_dir}")
         st.error("Ejecuta primero: python3 src/train_models.py")
         st.stop()
-    
+
     return create_pipeline(models_dir)
 
 
@@ -319,13 +310,13 @@ def load_pipeline():
 def load_gold_data():
     """
     Carga datos de la tabla GOLD para análisis.
-    
+
     Returns:
         pd.DataFrame: Datos de predicciones históricas
     """
     try:
         conn = get_connection()
-        
+
         query = """
         SELECT 
             g.ticket_id,
@@ -344,10 +335,10 @@ def load_gold_data():
         JOIN raw_tickets r ON g.ticket_id = r.ticket_id
         JOIN core_tickets_enriched c ON g.ticket_id = c.ticket_id
         """
-        
+
         df = pd.read_sql_query(query, conn)
         conn.close()
-        
+
         return df
     except Exception as e:
         # Si hay error, retornar DataFrame vacío
@@ -357,7 +348,7 @@ def load_gold_data():
 def view_ticket_analyzer(pipeline):
     """
     Vista 1: Formulario para analizar tickets individuales.
-    
+
     Dirigida a usuarios de negocio que quieren analizar un ticket nuevo.
     """
 
@@ -385,7 +376,7 @@ def view_ticket_analyzer(pipeline):
 
     st.markdown("""
     **Pega el texto del ticket** y obtén un análisis completo con IA:
-    - 🔒 Detección de seguridad (phishing, PII)
+    - 🔒 Detección de seguridad (phishing, PII, Agresividad)
     - 📊 Clasificación del tipo de ticket
     - 📉 Predicción de riesgo de churn
     - 💡 Recomendaciones de acción
@@ -393,14 +384,14 @@ def view_ticket_analyzer(pipeline):
 
     # Formulario de entrada
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         ticket_text = st.text_area(
             "Texto del Ticket:",
             height=200,
             placeholder="Ejemplo: El módulo de facturación está lanzando error 500. El cliente está muy molesto y quiere una solución urgente..."
         )
-    
+
     with col2:
         st.markdown("**Información del Proyecto:**")
         project_age = st.number_input(
@@ -410,7 +401,7 @@ def view_ticket_analyzer(pipeline):
             value=180,
             help="¿Hace cuántos días se inició el proyecto?"
         )
-        
+
         open_incidents = st.number_input(
             "Incidentes abiertos (últimos 30d):",
             min_value=0,
@@ -418,124 +409,201 @@ def view_ticket_analyzer(pipeline):
             value=2,
             help="Número de tickets abiertos en los últimos 30 días"
         )
-    
+
     # Botón de análisis
     if st.button("🔍 Analizar Ticket", type="primary", use_container_width=True):
-        if not ticket_text.strip():
+        if not ticket_text or not ticket_text.strip():
             st.warning("⚠️ Por favor ingresa el texto del ticket")
             return
-        
+
         with st.spinner("Analizando ticket..."):
             try:
-                # Procesar ticket
-                result = pipeline.process(
-                    text=ticket_text,
-                    project_age_days=int(project_age),
-                    open_incidents_30d=int(open_incidents)
-                )
-                
-                # Mostrar resultados
+
+                model_result = {}
+                try:
+            
+                    model_result = pipeline.process(
+                        text=ticket_text,
+                        project_age_days=int(project_age),
+                        open_incidents_30d=int(open_incidents)
+                    )
+                except Exception:
+                   
+                    model_result = None
+
+                pii = detect_pii(ticket_text)
+                masked = mask_pii(ticket_text)
+                phishing = detect_phishing(ticket_text)
+                # --- CAMBIO 2: LLAMAR AL DETECTOR DE LENGUAJE AGRESIVO ---
+                aggressive = detect_aggressive_language(ticket_text)
+                # -------------------------------------------------------------
+                sentiment = sentiment_score(ticket_text)
+                cleaned = clean_text(ticket_text)
+                word_count = len(cleaned.split())
+
+                ticket_type = getattr(model_result, "ticket_type_pred", "No disponible") if model_result else "No disponible"
+                churn_pred = getattr(model_result, "churn_risk_pred", np.nan) if model_result else np.nan
+                risk_segment = getattr(model_result, "risk_segment", "No disponible") if model_result else "No disponible"
+                recommendation_text = getattr(model_result, "recommendation_text", "No hay recomendaciones del modelo. Revisa manualmente.") if model_result else "No hay recomendaciones del modelo. Revisa manualmente."
+                cleaned_text_from_model = getattr(model_result, "cleaned_text", cleaned) if model_result else cleaned
+
                 st.markdown("---")
                 st.markdown("### 📋 Resultados del Análisis")
-                
-                # Alertas de seguridad
-                if result.is_phishing or result.has_pii:
+
+    
+                # --- CAMBIO 3: ACTUALIZAR ALERTA GENERAL DE SEGURIDAD ---
+                if phishing or pii or aggressive:
                     st.markdown('<div class="danger-box">', unsafe_allow_html=True)
                     st.markdown("#### 🚨 ALERTAS DE SEGURIDAD")
-                    if result.is_phishing:
+                    if phishing:
                         st.error("⚠️ **PHISHING DETECTADO**: Este ticket contiene patrones sospechosos de phishing")
-                    if result.has_pii:
+                    if any(len(v) > 0 for v in pii.values()):
                         st.warning("⚠️ **PII DETECTADO**: El ticket contiene información personal identificable")
+                    if aggressive:
+                        st.error("😡 **LENGUAJE AGRESIVO DETECTADO**: El cliente utiliza un tono ofensivo o inapropiado.")
                     st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Métricas principales
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
+                # --------------------------------------------------------
+
+                col1m, col2m, col3m, col4m = st.columns(4)
+
+                with col1m:
                     st.metric(
                         "Tipo de Ticket",
-                        result.ticket_type_pred,
-                        delta="Correctivo" if result.ticket_type_pred == "Correctivo" else "Evolutivo",
-                        delta_color="inverse" if result.ticket_type_pred == "Correctivo" else "normal"
+                        ticket_type,
+                        delta="Correctivo" if ticket_type == "Correctivo" else "Evolutivo",
+                        delta_color="inverse" if ticket_type == "Correctivo" else "normal"
                     )
-                
-                with col2:
-                    risk_color = "🔴" if result.risk_segment == "Alto" else ("🟡" if result.risk_segment == "Medio" else "🟢")
+
+                with col2m:
+                    risk_color = "🔴" if risk_segment == "Alto" else ("🟡" if risk_segment == "Medio" else "🟢")
+                    churn_display = f"{churn_pred:.1f}%" if not pd.isna(churn_pred) else "No disponible"
                     st.metric(
                         "Riesgo de Churn",
-                        f"{result.churn_risk_pred:.1f}%",
-                        delta=f"{risk_color} {result.risk_segment}"
+                        churn_display,
+                        delta=f"{risk_color} {risk_segment}"
                     )
+
+                with col3m:
+                    sentiment_emoji = "😠" if sentiment < -0.3 else ("😐" if sentiment < 0.3 else "😊")
+                    sentiment_label = "Negativo" if sentiment < -0.3 else ("Neutral" if sentiment < 0.3 else "Positivo")
                 
-                with col3:
-                    sentiment_emoji = "😠" if result.sentiment_score < -0.3 else ("😐" if result.sentiment_score < 0.3 else "😊")
                     st.metric(
-                        "Sentimiento",
-                        f"{result.sentiment_score:.2f}",
-                        delta=f"{sentiment_emoji}"
+                        "Puntaje de Sentimiento",
+                        value=f"{sentiment:.2f}",
+                        delta=f"{sentiment_emoji}  {sentiment_label}" 
                     )
-                
-                with col4:
+                    
+
+                with col4m:
                     st.metric(
                         "Palabras",
-                        result.word_count
+                        word_count
                     )
-                
-                # Recomendaciones
+
+                # Recomendaciones (card)
                 st.markdown("---")
                 st.markdown("### 💡 Recomendaciones")
                 
-                # Color según riesgo
-                if result.risk_segment == "Alto":
+                # --- CAMBIO 3: AGREGAR ALERTA DE AGRESIVIDAD A RECOMENDACIONES ---
+                if aggressive:
+                    st.error("😡 **PROTOCOLO DE CONDUCTA:** Debido al **lenguaje agresivo**, aplica el protocolo de escalamiento de comportamiento. Mantén la calma y usa un tono profesional y empático para desescalar.")
+                # ------------------------------------------------------------------
+
+                if risk_segment == "Alto":
                     st.markdown('<div class="danger-box">', unsafe_allow_html=True)
-                elif result.risk_segment == "Medio":
+                elif risk_segment == "Medio":
                     st.markdown('<div class="warning-box">', unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="success-box">', unsafe_allow_html=True)
-                
-                st.markdown(result.recommendation_text.replace('\n', '\n\n'))
+
+                st.markdown(recommendation_text.replace('\n', '\n\n'))
                 st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Texto procesado (expandible)
-                with st.expander("📝 Ver texto procesado"):
-                    st.text_area("Texto limpio:", result.cleaned_text, height=150, disabled=True)
-                
+
+    
+                st.markdown("---")
+                st.markdown("### 🔎 Detalle del Análisis")
+
+                tab1, tab2, tab3 = st.tabs(["Resumen", "Seguridad (PII, Phishing, Agresividad)", "Texto y Preprocesamiento"]) # Actualizar nombre de pestaña
+
+                with tab1:
+                    st.markdown("#### ✅ Resumen General")
+                    st.write("Aquí tienes un resumen rápido con lo más importante del ticket.")
+                    st.write(f"- **Tipo de ticket:** {ticket_type}")
+                    st.write(f"- **Riesgo de churn:** {churn_display} ({risk_segment})")
+                    st.write(f"- **Sentimiento (score):** {sentiment:.3f} — {sentiment_label}")
+                    st.write(f"- **Longitud (palabras):** {word_count}")
+                    st.write(f"- **Phishing detectado:** {'Sí' if phishing else 'No'}")
+                    # --- CAMBIO 4: AGREGAR RESULTADO DE AGRESIVIDAD AL RESUMEN ---
+                    st.write(f"- **Lenguaje Agresivo:** {'Sí' if aggressive else 'No'}")
+                    # -------------------------------------------------------------
+                    if phishing:
+                        st.write(f"- **Indicadores de phishing encontrados:** {', '.join(phishing.get('found'))}")
+
+                with tab2:
+                    st.markdown("#### 🔒 PII Detectado")
+                    st.caption("Resumen estructurado de la PII encontrada")
+                    st.json(pii)
+
+                    st.markdown("#### 🔐 PII Enmascarado")
+                    # Mostrar el texto en una card con scroll si es largo
+                    st.text_area("Texto enmascarado:", masked, height=150, disabled=True)
+
+                    st.markdown("#### 🐟 Resultado de Phishing")
+                    st.json(phishing)
+                    
+                    # --- CAMBIO 5: AGREGAR DETALLE DE LENGUAJE AGRESIVO ---
+                    st.markdown("#### 😡 Resultado de Lenguaje Agresivo")
+                    if aggressive:
+                        st.error("El detector encontró patrones de lenguaje inapropiado o agresivo. **Acción requerida: Aplicar protocolo de conducta.**")
+                    else:
+                        st.success("No se detectó lenguaje agresivo.")
+                    # --------------------------------------------------------
+
+                with tab3:
+                    st.markdown("#### 🧹 Texto Limpio / Tokenización")
+                    st.text_area("Texto limpio (lowercase, normalizado):", cleaned_text_from_model, height=120, disabled=True)
+
+                    st.markdown("#### 📝 Texto original")
+                    st.text_area("Texto original:", ticket_text, height=150, disabled=True)
+
+                    st.markdown("#### 💬 Sentimiento (detalle)")
+                    st.json(sentiment)
+
             except Exception as e:
                 import traceback
                 st.error(f"❌ Error al procesar el ticket: {type(e).__name__}: {str(e)}")
                 st.code(traceback.format_exc())
 
 
-
 def view_data_analytics():
     """
     Vista 2: Gráficos y análisis de datos.
-    
+
     Dirigida al equipo de datos para explorar distribuciones y patrones.
     """
     st.markdown('<div class="view-header">📊 Análisis de Datos</div>', unsafe_allow_html=True)
-    
+
     try:
         df = load_gold_data()
-        
+
         if df.empty:
             st.info("ℹ️ No hay datos históricos aún. Procesa algunos tickets primero.")
             return
-        
+
         # Convertir created_at a datetime si es string
         if df['created_at'].dtype == 'object':
             df['created_at'] = pd.to_datetime(df['created_at'])
-        
+
         # === FILTROS ===
         st.markdown("### 🔍 Filtros")
-        
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             # Filtro de fechas
             min_date = df['created_at'].min().date()
             max_date = df['created_at'].max().date()
-            
+
             date_range = st.date_input(
                 "Rango de fechas:",
                 value=(min_date, max_date),
@@ -543,7 +611,7 @@ def view_data_analytics():
                 max_value=max_date,
                 help="Filtra tickets por fecha de creación"
             )
-        
+
         with col2:
             # Filtro de clientes
             all_clients = sorted(df['client_name'].unique().tolist())
@@ -553,7 +621,7 @@ def view_data_analytics():
                 default=all_clients,
                 help="Selecciona uno o más clientes"
             )
-        
+
         with col3:
             # Filtro de canales
             all_channels = sorted(df['channel'].unique().tolist())
@@ -563,7 +631,7 @@ def view_data_analytics():
                 default=all_channels,
                 help="Filtra por canal de comunicación"
             )
-        
+
         with col4:
             # Filtro de segmento de riesgo
             all_segments = ['Bajo', 'Medio', 'Alto']
@@ -573,10 +641,10 @@ def view_data_analytics():
                 default=all_segments,
                 help="Filtra por nivel de riesgo de churn"
             )
-        
+
         # Aplicar filtros
         df_filtered = df.copy()
-        
+
         # Filtro de fechas
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
@@ -584,28 +652,28 @@ def view_data_analytics():
                 (df_filtered['created_at'].dt.date >= start_date) &
                 (df_filtered['created_at'].dt.date <= end_date)
             ]
-        
+
         # Filtro de clientes
         if selected_clients:
             df_filtered = df_filtered[df_filtered['client_name'].isin(selected_clients)]
-        
+
         # Filtro de canales
         if selected_channels:
             df_filtered = df_filtered[df_filtered['channel'].isin(selected_channels)]
-        
+
         # Filtro de segmentos
         if selected_segments:
             df_filtered = df_filtered[df_filtered['risk_segment'].isin(selected_segments)]
-        
+
         # Mostrar info de filtros aplicados
         if len(df_filtered) < len(df):
             st.info(f"📊 Mostrando {len(df_filtered)} de {len(df)} tickets ({len(df_filtered)/len(df)*100:.1f}%)")
-        
+
         # Botón para exportar datos filtrados
         @st.cache_data
         def convert_df_to_csv(dataframe):
             return dataframe.to_csv(index=False).encode('utf-8')
-        
+
         csv = convert_df_to_csv(df_filtered)
         st.download_button(
             label="📥 Descargar datos filtrados (CSV)",
@@ -614,44 +682,44 @@ def view_data_analytics():
             mime="text/csv",
             help="Descarga los datos filtrados en formato CSV"
         )
-        
+
         st.markdown("---")
-        
+
         # Usar df_filtered en lugar de df para el resto
         df = df_filtered
-        
+
         if df.empty:
             st.warning("⚠️ No hay datos que coincidan con los filtros seleccionados.")
             return
-        
+
         # Métricas resumen
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.metric("Total Tickets", len(df))
-        
+
         with col2:
             avg_churn = df['churn_risk_pred'].mean()
             st.metric("Churn Promedio", f"{avg_churn:.1f}%")
-        
+
         with col3:
             high_risk_pct = (df['risk_segment'] == 'Alto').sum() / len(df) * 100
             st.metric("Tickets Alto Riesgo", f"{high_risk_pct:.1f}%")
-        
+
         with col4:
             phishing_count = df['is_phishing'].sum()
             st.metric("Phishing Detectados", phishing_count)
-        
+
         st.markdown("---")
-        
+
         # Gráficos
         col1, col2 = st.columns(2)
-        
+
         with col1:
             # Distribución de tipos de ticket
             st.markdown("### 📋 Distribución de Tipos de Ticket")
             type_counts = df['ticket_type_pred'].value_counts()
-            
+
             fig = px.pie(
                 values=type_counts.values,
                 names=type_counts.index,
@@ -661,14 +729,14 @@ def view_data_analytics():
             fig.update_traces(textposition='inside', textinfo='percent+label')
             fig.update_layout(height=300)
             st.plotly_chart(fig, use_container_width=True)
-        
+
         with col2:
             # Distribución de segmentos de riesgo
             st.markdown("### 📉 Segmentos de Riesgo de Churn")
             risk_counts = df['risk_segment'].value_counts()
-            
+
             colors = {'Alto': '#dc3545', 'Medio': '#ffc107', 'Bajo': '#28a745'}
-            
+
             fig = px.bar(
                 x=risk_counts.index,
                 y=risk_counts.values,
@@ -678,10 +746,10 @@ def view_data_analytics():
             )
             fig.update_layout(showlegend=False, height=300)
             st.plotly_chart(fig, use_container_width=True)
-        
+
         # Distribución de churn risk
         st.markdown("### 📈 Distribución de Riesgo de Churn")
-        
+
         fig = px.histogram(
             df,
             x='churn_risk_pred',
@@ -693,14 +761,14 @@ def view_data_analytics():
         )
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
-        
+
         # Churn por canal
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.markdown("### 📱 Churn Promedio por Canal")
             channel_churn = df.groupby('channel')['churn_risk_pred'].mean().sort_values(ascending=False)
-            
+
             fig = px.bar(
                 x=channel_churn.index,
                 y=channel_churn.values,
@@ -710,11 +778,11 @@ def view_data_analytics():
             )
             fig.update_layout(showlegend=False, height=300)
             st.plotly_chart(fig, use_container_width=True)
-        
+
         with col2:
             st.markdown("### 💬 Sentimiento Promedio por Tipo")
             sentiment_by_type = df.groupby('ticket_type_pred')['sentiment_score'].mean()
-            
+
             fig = px.bar(
                 x=sentiment_by_type.index,
                 y=sentiment_by_type.values,
@@ -724,7 +792,7 @@ def view_data_analytics():
             )
             fig.update_layout(showlegend=False, height=300)
             st.plotly_chart(fig, use_container_width=True)
-        
+
     except Exception as e:
         st.error(f"❌ Error al cargar datos: {str(e)}")
 
@@ -732,27 +800,27 @@ def view_data_analytics():
 def view_churn_factors():
     """
     Vista 3: Análisis de factores de churn.
-    
+
     Dirigida a Account Managers para entender qué variables influyen más.
     """
     st.markdown('<div class="view-header">🎯 Factores de Influencia en Churn</div>', unsafe_allow_html=True)
-    
+
     st.markdown("""
     **Análisis de las variables que más impactan el riesgo de cancelación del cliente.**
-    
+
     Esta información te ayuda a identificar señales tempranas de churn y tomar acción preventiva.
     """)
-    
+
     try:
         df = load_gold_data()
-        
+
         if df.empty:
             st.info("ℹ️ No hay datos históricos aún. Procesa algunos tickets primero.")
             return
-        
+
         # Importancia de características (hardcoded del modelo)
         st.markdown("### 📊 Importancia de Variables en Predicción de Churn")
-        
+
         # Estos valores vienen del entrenamiento
         importance_data = {
             'Variable': [
@@ -771,9 +839,9 @@ def view_churn_factors():
                 'Phishing es grave pero relativamente raro'
             ]
         }
-        
+
         importance_df = pd.DataFrame(importance_data)
-        
+
         # Gráfico de importancia
         fig = px.bar(
             importance_df,
@@ -787,25 +855,25 @@ def view_churn_factors():
         fig.update_traces(texttemplate='%{text:.1%}', textposition='outside')
         fig.update_layout(showlegend=False, height=400, xaxis_title="Importancia Relativa")
         st.plotly_chart(fig, use_container_width=True)
-        
+
         # Tabla con descripciones
         st.markdown("### 📝 Interpretación de Factores")
-        
+
         for _, row in importance_df.iterrows():
             with st.expander(f"**{row['Variable']}** - Importancia: {row['Importancia']:.1%}"):
                 st.write(row['Descripción'])
-        
+
         st.markdown("---")
-        
+
         # Análisis de correlaciones
         st.markdown("### 🔗 Análisis de Correlaciones")
-        
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             # Churn vs Sentimiento
             st.markdown("#### Churn vs Sentimiento")
-            
+
             fig = px.scatter(
                 df,
                 x='sentiment_score',
@@ -821,13 +889,13 @@ def view_churn_factors():
             )
             fig.update_layout(height=350)
             st.plotly_chart(fig, use_container_width=True)
-            
+
             st.info("📌 **Insight:** Sentimiento negativo correlaciona fuertemente con mayor churn")
-        
+
         with col2:
             # Churn por tipo de ticket
             st.markdown("#### Distribución de Churn por Tipo")
-            
+
             fig = px.box(
                 df,
                 x='ticket_type_pred',
@@ -841,15 +909,15 @@ def view_churn_factors():
             )
             fig.update_layout(showlegend=False, height=350)
             st.plotly_chart(fig, use_container_width=True)
-            
-            st.info("📌 **Insight:** Tickets correctivos tienden a tener mayor riesgo de churn")
-        
+
+            st.info("📌 **Insight:** Tickets correctivos tienden a tener mayor riesgo")
+
         # Recomendaciones para Account Managers
         st.markdown("---")
         st.markdown("### 💡 Recomendaciones para Account Managers")
-        
+
         col1, col2, col3 = st.columns(3)
-        
+
         with col1:
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             st.markdown("#### 🎯 Priorización")
@@ -859,7 +927,7 @@ def view_churn_factors():
             - Proyectos de **1+ año** requieren atención especial
             """)
             st.markdown('</div>', unsafe_allow_html=True)
-        
+
         with col2:
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             st.markdown("#### 🚨 Señales de Alerta")
@@ -869,7 +937,7 @@ def view_churn_factors():
             - Tickets largos con muchos detalles del problema
             """)
             st.markdown('</div>', unsafe_allow_html=True)
-        
+
         with col3:
             st.markdown('<div class="metric-card">', unsafe_allow_html=True)
             st.markdown("#### ✅ Acciones Preventivas")
@@ -879,14 +947,14 @@ def view_churn_factors():
             - Considerar reunión de revisión trimestral
             """)
             st.markdown('</div>', unsafe_allow_html=True)
-        
+
     except Exception as e:
         st.error(f"❌ Error al analizar factores: {str(e)}")
 
 
 def main():
     """Función principal del dashboard."""
-    
+
     # Sidebar con navegación
     with st.sidebar:
         logo_path = Path("assets/logo.jpeg")
@@ -905,15 +973,15 @@ def main():
         st.markdown("---")
         st.info("""
         **Neuro Support AI**:
-        - Detección de phishing y PII  
-        - Clasificación inteligente  
-        - Predicción de churn  
-        - Recomendaciones accionables  
+        - Detección de phishing y PII 
+        - Clasificación inteligente 
+        - Predicción de churn 
+        - Recomendaciones accionables 
         """)
-    
+
     # Cargar pipeline
     pipeline = load_pipeline()
-    
+
     # Renderizar vista seleccionada
     if "Análisis de Ticket" in view_option:
         view_ticket_analyzer(pipeline)
@@ -921,7 +989,7 @@ def main():
         view_data_analytics()
     elif "Factores de Churn" in view_option:
         view_churn_factors()
-    
+
     # Footer
     st.markdown("""
     <div class="footer">
