@@ -1,384 +1,330 @@
 """
-Módulo de Modelos de Machine Learning para clasificación y predicción.
+Model definitions and training utilities for Neuro Support AI.
 
-Implementa modelos para:
-- Clasificación de tipo de ticket (Correctivo/Evolutivo)
-- Predicción de riesgo de churn
+Includes:
+- TicketTypeClassifier: classify tickets as Correctivo/Evolutivo
+- ChurnPredictor: regress churn_risk in [0, 100]
+- ModelTrainer: helper to train and persist both models from the synthetic CSV.
 
-Owner: Data Science Team
+This module is purposely self-contained so it can be reused both from notebooks
+and from CLI scripts (see train_models.py).
 """
 
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Dict, Optional, Tuple, Any, Iterable, Union
+
 import joblib
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import classification_report, mean_absolute_error, r2_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    classification_report,
+    mean_absolute_error,
+    r2_score,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
 
 
-class BaseModel:
-    """
-    Clase base para modelos de ML.
-    
-    Implementa el principio de Responsabilidad Única (SRP).
-    """
-    
-    def __init__(self, model_path: Optional[Path] = None):
-        """
-        Inicializa el modelo.
-        
-        Args:
-            model_path: Ruta donde guardar/cargar el modelo
-        """
-        self.model = None
-        self.model_path = model_path
-        self.is_trained = False
-    
-    def save(self, path: Optional[Path] = None) -> None:
-        """
-        Guarda el modelo entrenado en disco.
-        
-        Args:
-            path: Ruta donde guardar (opcional, usa self.model_path por defecto)
-        """
-        save_path = path or self.model_path
-        if save_path and self.model:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            joblib.dump(self.model, save_path)
-            print(f"✅ Modelo guardado en {save_path}")
-    
-    def load(self, path: Optional[Path] = None) -> None:
-        """
-        Carga un modelo desde disco.
-        
-        Args:
-            path: Ruta del modelo a cargar
-        """
-        load_path = path or self.model_path
-        if load_path and load_path.exists():
-            self.model = joblib.load(load_path)
-            self.is_trained = True
-            print(f"✅ Modelo cargado desde {load_path}")
-        else:
-            raise FileNotFoundError(f"No se encontró el modelo en {load_path}")
+# ------------------------
+# Low-level model wrappers
+# ------------------------
 
 
-class TicketTypeClassifier(BaseModel):
+class TicketTypeClassifier:
     """
-    Clasificador de tipo de ticket (Correctivo vs Evolutivo).
-    
-    Usa TF-IDF + Random Forest.
+    Wrapper around a text classification pipeline.
+
+    The underlying model is a TF-IDF + LogisticRegression classifier.
+    It is trained to distinguish between "Correctivo" y "Evolutivo".
     """
-    
-    def __init__(self, model_path: Optional[Path] = None):
-        """
-        Inicializa el clasificador.
-        
-        Args:
-            model_path: Ruta donde guardar/cargar el modelo
-        """
-        super().__init__(model_path)
-        self.vectorizer = TfidfVectorizer(max_features=100, ngram_range=(1, 2))
-    
-    def train(self, texts: pd.Series, labels: pd.Series) -> dict:
-        """
-        Entrena el clasificador de tipo de ticket.
-        
-        Args:
-            texts: Serie con textos limpios de tickets
-            labels: Serie con etiquetas ('Correctivo' o 'Evolutivo')
-            
-        Returns:
-            dict: Métricas de evaluación
-        """
-        # Dividir en train/test
-        X_train, X_test, y_train, y_test = train_test_split(
-            texts, labels, test_size=0.2, random_state=42, stratify=labels
+
+    def __init__(self, pipeline: Optional[Pipeline] = None):
+        self.pipeline: Optional[Pipeline] = pipeline
+        self.is_trained: bool = pipeline is not None
+
+    def _build_pipeline(self) -> Pipeline:
+        return Pipeline(
+            steps=[
+                (
+                    "tfidf",
+                    TfidfVectorizer(
+                        max_features=5000,
+                        ngram_range=(1, 2),
+                        strip_accents="unicode",
+                    ),
+                ),
+                (
+                    "clf",
+                    LogisticRegression(
+                        max_iter=1000,
+                        class_weight="balanced",
+                    ),
+                ),
+            ]
         )
-        
-        # Vectorizar textos
-        X_train_vec = self.vectorizer.fit_transform(X_train)
-        X_test_vec = self.vectorizer.transform(X_test)
-        
-        # Entrenar modelo
-        self.model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=10,
+
+    # --- API used during training ---
+
+    def fit(self, texts: Iterable[str], labels: Iterable[str]) -> "TicketTypeClassifier":
+        texts = list(texts)
+        labels = list(labels)
+        if not texts:
+            raise ValueError("No training data provided to TicketTypeClassifier.fit()")
+
+        self.pipeline = self._build_pipeline()
+        self.pipeline.fit(texts, labels)
+        self.is_trained = True
+        return self
+
+    # --- API used at inference time (dashboard) ---
+
+    def predict(self, text: Union[str, Iterable[str]]) -> Union[str, np.ndarray]:
+        if not self.is_trained or self.pipeline is None:
+            raise RuntimeError("TicketTypeClassifier is not trained/loaded.")
+
+        # Aceptar tanto un solo string como una lista/serie
+        if isinstance(text, str):
+            preds = self.pipeline.predict([text])
+            return preds[0]
+        else:
+            return self.pipeline.predict(list(text))
+
+    # --- Persistence helpers ---
+
+    def save(self, path: Path) -> None:
+        if self.pipeline is None:
+            raise RuntimeError("Cannot save an uninitialized classifier pipeline.")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(self.pipeline, path)
+
+    def load(self, path: Path) -> None:
+        if not path.exists():
+            raise FileNotFoundError(f"TicketTypeClassifier model not found at {path}")
+        self.pipeline = joblib.load(path)
+        self.is_trained = True
+
+
+class ChurnPredictor:
+    """
+    Simple regression model for churn risk in [0, 100].
+
+    It uses only structured features (age, incidents, sentiment, phishing, word_count)
+    so that the dashboard can provide them easily.
+    """
+
+    FEATURE_ORDER = [
+        "project_age_days",
+        "open_incidents_30d",
+        "sentiment_label",
+        "is_phishing",
+        "word_count",
+    ]
+
+    def __init__(self, model: Optional[RandomForestRegressor] = None):
+        self.model: Optional[RandomForestRegressor] = model
+        self.is_trained: bool = model is not None
+
+    def _build_model(self) -> RandomForestRegressor:
+        return RandomForestRegressor(
+            n_estimators=200,
             random_state=42,
-            class_weight='balanced'
+            n_jobs=-1,
         )
-        self.model.fit(X_train_vec, y_train)
-        
-        # Evaluar
-        y_pred = self.model.predict(X_test_vec)
-        
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "ChurnPredictor":
+        if X.empty:
+            raise ValueError("No training data provided to ChurnPredictor.fit().")
+        self.model = self._build_model()
+        self.model.fit(X[self.FEATURE_ORDER], y)
         self.is_trained = True
-        
-        return {
-            'accuracy': self.model.score(X_test_vec, y_test),
-            'classification_report': classification_report(y_test, y_pred)
-        }
-    
-    def predict(self, text: str) -> str:
-        """
-        Predice el tipo de ticket.
-        
-        Args:
-            text: Texto limpio del ticket
-            
-        Returns:
-            str: 'Correctivo' o 'Evolutivo'
-        """
-        if not self.is_trained:
-            raise ValueError("El modelo no está entrenado. Usa train() o load() primero.")
-        
-        text_vec = self.vectorizer.transform([text])
-        prediction = self.model.predict(text_vec)[0]
-        
-        return prediction
-    
-    def save(self, path: Optional[Path] = None) -> None:
-        """Guarda modelo y vectorizador."""
-        save_path = path or self.model_path
-        if save_path:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            joblib.dump({
-                'model': self.model,
-                'vectorizer': self.vectorizer
-            }, save_path)
-            print(f"✅ Clasificador guardado en {save_path}")
-    
-    def load(self, path: Optional[Path] = None) -> None:
-        """Carga modelo y vectorizador."""
-        load_path = path or self.model_path
-        if load_path and load_path.exists():
-            data = joblib.load(load_path)
-            self.model = data['model']
-            self.vectorizer = data['vectorizer']
-            self.is_trained = True
-            print(f"✅ Clasificador cargado desde {load_path}")
-        else:
-            raise FileNotFoundError(f"No se encontró el modelo en {load_path}")
+        return self
 
+    def _to_feature_vector(self, features: Dict[str, Any]) -> np.ndarray:
+        """Convert feature dict into numpy array with fixed column order."""
+        return np.array(
+            [[float(features.get(name, 0.0)) for name in self.FEATURE_ORDER]],
+            dtype=float,
+        )
 
-class ChurnPredictor(BaseModel):
-    """
-    Predictor de riesgo de churn.
-    
-    Usa características numéricas + Random Forest Regressor.
-    """
-    
-    def __init__(self, model_path: Optional[Path] = None):
+    def predict(self, features: Dict[str, Any]) -> float:
         """
-        Inicializa el predictor.
-        
+        Predict churn risk for a single ticket.
+
         Args:
-            model_path: Ruta donde guardar/cargar el modelo
-        """
-        super().__init__(model_path)
-        self.feature_names = None
-    
-    def train(self, features: pd.DataFrame, churn_risk: pd.Series) -> dict:
-        """
-        Entrena el predictor de churn.
-        
-        Args:
-            features: DataFrame con características numéricas:
-                - project_age_days
-                - open_incidents_30d
-                - sentiment_label
-                - is_phishing
-                - word_count
-            churn_risk: Serie con valores de churn (0-100)
-            
+            features: dict with keys:
+                project_age_days, open_incidents_30d,
+                sentiment_label, is_phishing, word_count
+
         Returns:
-            dict: Métricas de evaluación
+            float: churn risk between 0 and 100.
         """
-        self.feature_names = features.columns.tolist()
-        
-        # Dividir en train/test
-        X_train, X_test, y_train, y_test = train_test_split(
-            features, churn_risk, test_size=0.2, random_state=42
-        )
-        
-        # Entrenar modelo
-        self.model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            random_state=42
-        )
-        self.model.fit(X_train, y_train)
-        
-        # Evaluar
-        y_pred = self.model.predict(X_test)
-        
+        if not self.is_trained or self.model is None:
+            raise RuntimeError("ChurnPredictor is not trained/loaded.")
+
+        X_vec = self._to_feature_vector(features)
+        pred = self.model.predict(X_vec)[0]
+        # Clamp to [0, 100] just in case
+        return float(max(0.0, min(100.0, pred)))
+
+    def save(self, path: Path) -> None:
+        if self.model is None:
+            raise RuntimeError("Cannot save an uninitialized churn model.")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(self.model, path)
+
+    def load(self, path: Path) -> None:
+        if not path.exists():
+            raise FileNotFoundError(f"ChurnPredictor model not found at {path}")
+        self.model = joblib.load(path)
         self.is_trained = True
-        
-        return {
-            'mae': mean_absolute_error(y_test, y_pred),
-            'r2_score': r2_score(y_test, y_pred),
-            'feature_importance': dict(zip(self.feature_names, self.model.feature_importances_))
-        }
-    
-    def predict(self, features: dict) -> float:
-        """
-        Predice el riesgo de churn.
-        
-        Args:
-            features: Diccionario con características:
-                - project_age_days
-                - open_incidents_30d
-                - sentiment_score
-                - is_phishing (0/1)
-                - word_count
-                
-        Returns:
-            float: Riesgo de churn (0-100)
-        """
-        if not self.is_trained:
-            raise ValueError("El modelo no está entrenado. Usa train() o load() primero.")
-        
-        # Crear DataFrame con las características en el orden correcto
-        df = pd.DataFrame([features])[self.feature_names]
-        
-        # Predecir
-        prediction = self.model.predict(df)[0]
-        
-        # Asegurar que esté en el rango [0, 100]
-        return max(0, min(100, prediction))
-    
-    def get_feature_importance(self) -> dict:
-        """
-        Obtiene la importancia de cada característica.
-        
-        Returns:
-            dict: {feature_name: importance_score}
-        """
-        if not self.is_trained:
-            raise ValueError("El modelo no está entrenado.")
-        
-        return dict(zip(self.feature_names, self.model.feature_importances_))
-    
-    def save(self, path: Optional[Path] = None) -> None:
-        """
-        Guarda modelo y feature_names.
-        
-        Args:
-            path: Ruta donde guardar (opcional, usa self.model_path por defecto)
-        """
-        save_path = path or self.model_path
-        if save_path:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            joblib.dump({
-                'model': self.model,
-                'feature_names': self.feature_names
-            }, save_path)
-            print(f"✅ Predictor guardado en {save_path}")
-    
-    def load(self, path: Optional[Path] = None) -> None:
-        """
-        Carga modelo y feature_names.
-        
-        Args:
-            path: Ruta del modelo a cargar
-        """
-        load_path = path or self.model_path
-        if load_path and load_path.exists():
-            data = joblib.load(load_path)
-            self.model = data['model']
-            self.feature_names = data['feature_names']
-            self.is_trained = True
-            print(f"✅ Modelo cargado desde {load_path}")
-        else:
-            raise FileNotFoundError(f"No se encontró el modelo en {load_path}")
 
 
+# -------------------
+# High-level trainer
+# -------------------
+
+
+@dataclass
 class ModelTrainer:
     """
-    Orquestador para entrenar todos los modelos.
-    
-    Implementa el principio de Responsabilidad Única (SRP).
+    Helper class that encapsulates the full training pipeline.
+
+    Usage:
+        trainer = create_model_trainer()
+        df = trainer.load_data()
+        trainer.train_ticket_classifier(df)
+        trainer.train_churn_predictor(df)
     """
-    
-    def __init__(self, data_path: Path, models_dir: Path):
-        """
-        Inicializa el entrenador.
-        
-        Args:
-            data_path: Ruta al CSV de entrenamiento
-            models_dir: Directorio donde guardar los modelos
-        """
-        self.data_path = data_path
-        self.models_dir = models_dir
-        self.models_dir.mkdir(parents=True, exist_ok=True)
-    
-    def train_all(self) -> dict:
-        """
-        Entrena todos los modelos y los guarda.
-        
-        Returns:
-            dict: Métricas de todos los modelos
-        """
-        print("📊 Cargando datos de entrenamiento...")
+
+    data_path: Path
+    models_dir: Path
+
+    def load_data(self) -> pd.DataFrame:
+        if not self.data_path.exists():
+            raise FileNotFoundError(
+                f"Training dataset not found at {self.data_path.resolve()}"
+            )
+
         df = pd.read_csv(self.data_path)
-        
-        print(f"✅ Datos cargados: {len(df)} registros\n")
-        
-        # 1. Entrenar clasificador de tipo de ticket
-        print("🤖 Entrenando clasificador de tipo de ticket...")
-        ticket_classifier = TicketTypeClassifier(
-            model_path=self.models_dir / "ticket_classifier.pkl"
-        )
-        classifier_metrics = ticket_classifier.train(df['text'], df['ticket_type'])
-        ticket_classifier.save()
-        
-        print(f"   Accuracy: {classifier_metrics['accuracy']:.3f}")
-        print(f"   Report:\n{classifier_metrics['classification_report']}\n")
-        
-        # 2. Entrenar predictor de churn
-        print("🤖 Entrenando predictor de churn...")
-        
-        # Preparar características para churn
-        churn_features = df[[
-            'project_age_days',
-            'open_incidents_30d',
-            'sentiment_label',
-            'is_phishing',
-        ]].copy()
-        
-        # Agregar word_count simple
-        churn_features['word_count'] = df['text'].str.split().str.len()
-        
-        churn_predictor = ChurnPredictor(
-            model_path=self.models_dir / "churn_predictor.pkl"
-        )
-        churn_metrics = churn_predictor.train(churn_features, df['churn_risk'])
-        churn_predictor.save()
-        
-        print(f"   MAE: {churn_metrics['mae']:.2f}")
-        print(f"   R²: {churn_metrics['r2_score']:.3f}")
-        print(f"   Feature Importance:")
-        for feat, imp in sorted(churn_metrics['feature_importance'].items(), key=lambda x: x[1], reverse=True):
-            print(f"      {feat}: {imp:.3f}")
-        
-        return {
-            'classifier': classifier_metrics,
-            'churn_predictor': churn_metrics
+
+        # Basic sanity checks
+        expected_cols = {
+            "ticket_id",
+            "client_name",
+            "project_name",
+            "channel",
+            "text",
+            "ticket_type",
+            "churn_risk",
+            "project_age_days",
+            "open_incidents_30d",
+            "sentiment_label",
+            "is_phishing",
+            "has_pii",
         }
+        missing = expected_cols.difference(df.columns)
+        if missing:
+            # No abort; just warn – hackathon friendly
+            print(f"⚠️  Dataset missing columns: {sorted(missing)}")
+
+        # Derive word_count for churn model
+        df["word_count"] = df["text"].fillna("").str.split().str.len()
+
+        return df
+
+    # --- Training routines ---
+
+    def train_ticket_classifier(
+        self, df: Optional[pd.DataFrame] = None
+    ) -> Tuple[TicketTypeClassifier, Dict[str, float]]:
+        if df is None:
+            df = self.load_data()
+
+        X = df["text"].astype(str)
+        y = df["ticket_type"].astype(str)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+        clf = TicketTypeClassifier()
+        clf.fit(X_train, y_train)
+
+        y_pred = clf.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred, average="weighted")
+
+        print("\n📊 Ticket Type Classifier metrics")
+        print("--------------------------------")
+        print(f"Accuracy: {acc:.3f}")
+        print(f"F1-score (weighted): {f1:.3f}")
+        print("\nClassification report:")
+        print(classification_report(y_test, y_pred))
+
+        # Persist model
+        model_path = self.models_dir / "ticket_classifier.pkl"
+        clf.save(model_path)
+        print(f"💾 Saved ticket classifier to {model_path.resolve()}")
+
+        metrics = {"accuracy": acc, "f1_weighted": f1}
+        return clf, metrics
+
+    def train_churn_predictor(
+        self, df: Optional[pd.DataFrame] = None
+    ) -> Tuple[ChurnPredictor, Dict[str, float]]:
+        if df is None:
+            df = self.load_data()
+
+        feature_cols = [
+            "project_age_days",
+            "open_incidents_30d",
+            "sentiment_label",
+            "is_phishing",
+            "word_count",
+        ]
+        X = df[feature_cols].copy()
+        y = df["churn_risk"].astype(float)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        reg = ChurnPredictor()
+        reg.fit(X_train, y_train)
+
+        y_pred = reg.model.predict(X_test[reg.FEATURE_ORDER])
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+
+        print("\n📊 Churn Predictor metrics")
+        print("-------------------------")
+        print(f"MAE: {mae:.3f}")
+        print(f"R²:  {r2:.3f}")
+
+        # Persist model
+        model_path = self.models_dir / "churn_predictor.pkl"
+        reg.save(model_path)
+        print(f"💾 Saved churn predictor to {model_path.resolve()}")
+
+        metrics = {"mae": mae, "r2": r2}
+        return reg, metrics
 
 
-# Factory para crear entrenador
+# Public factory
+
 def create_model_trainer() -> ModelTrainer:
     """
-    Crea una instancia de ModelTrainer con rutas por defecto.
-    
-    Returns:
-        ModelTrainer: Entrenador configurado
+    Create a ModelTrainer with project-relative default paths.
     """
-    data_path = Path("data/tickets_train.csv")
+    data_path = Path("data") / "tickets_train.csv"
     models_dir = Path("models")
-    
-    return ModelTrainer(data_path, models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    return ModelTrainer(data_path=data_path, models_dir=models_dir)

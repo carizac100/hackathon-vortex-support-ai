@@ -1,55 +1,47 @@
 """
-Script para entrenar los modelos de ML usando los datos sintéticos.
+CLI script to train all ML models used by Neuro Support AI.
 
-Ejecutar con: python3 src/train_models.py
+Usage:
+    python -m src.train_models
+    or
+    python src/train_models.py
 """
 
 import sys
 from pathlib import Path
 
-# Agregar src al path para imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Ensure local src/ is importable when running as script
+CURRENT_DIR = Path(__file__).parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
 from models import create_model_trainer
 
 
-def main():
-    """Función principal para entrenar todos los modelos."""
-    print("=" * 60)
-    print("🚀 ENTRENAMIENTO DE MODELOS - VORTEX SUPPORT AI")
-    print("=" * 60)
-    print()
-    
-    # Crear entrenador
+def main() -> None:
     trainer = create_model_trainer()
-    
-    # Entrenar todos los modelos
+
     try:
-        metrics = trainer.train_all()
-        
-        print()
-        print("=" * 60)
-        print("✅ ENTRENAMIENTO COMPLETADO")
-        print("=" * 60)
-        print()
-        print("Los modelos han sido guardados en la carpeta 'models/'")
-        print("Ahora puedes ejecutar el dashboard con:")
-        print("  python3 -m streamlit run src/dashboard_app.py")
-        print()
-        
+        print("🚀 Loading training data...")
+        df = trainer.load_data()
+
+        print("\n🔧 Training ticket type classifier (Correctivo/Evolutivo)...")
+        _, cls_metrics = trainer.train_ticket_classifier(df)
+
+        print("\n🔧 Training churn predictor (0–100)...")
+        _, churn_metrics = trainer.train_churn_predictor(df)
+
+        print("\n✅ Training completed.")
+        print("Ticket classifier metrics:", cls_metrics)
+        print("Churn predictor metrics:", churn_metrics)
+
     except FileNotFoundError as e:
-        print()
-        print("❌ ERROR: No se encontró el archivo de datos.")
-        print(f"   {e}")
-        print()
-        print("👉 Primero genera los datos con:")
-        print("   python3 src/generate_dummy_data.py")
-        print()
+        print(f"\n❌ Dataset not found: {e}")
+        print("\nTip: generate it first with:")
+        print("   python src/generate_dummy_data.py")
         sys.exit(1)
     except Exception as e:
-        print()
-        print(f"❌ ERROR durante el entrenamiento: {e}")
-        print()
+        print(f"\n❌ Unexpected error during training: {e}")
         sys.exit(1)
 
 

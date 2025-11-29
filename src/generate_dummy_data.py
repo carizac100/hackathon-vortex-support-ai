@@ -1,172 +1,200 @@
 """
-Generate synthetic ticket dataset for training and EDA.
+Generador de dataset sintético de tickets de soporte EN ESPAÑOL
+para Neuro Support AI (Black_Cyber).
 
-Owner: R2 (Camilo) - Data generator for the whole team.
+Salida:
+    data/tickets_train.csv
+
+Columnas principales:
+    ticket_id
+    client_name
+    project_name
+    channel
+    text
+    ticket_type
+    churn_risk
+    project_age_days
+    open_incidents_30d
+    sentiment_label
+    is_phishing
+    has_pii
 """
 
-import random
-import csv
 from pathlib import Path
+import random
+from datetime import datetime, timedelta
 
-DATA_PATH = Path("data/tickets_train.csv")
+import numpy as np
+import pandas as pd
 
-# Plantillas de texto para tickets correctivos y evolutivos
-CORRECTIVE_TEMPLATES = [
-    "Since the last deployment the invoicing module throws error 500 when generating invoices.",
-    "The user cannot log in to the platform, it says invalid credentials even after password reset.",
-    "The report page crashes when we filter by date range.",
-    "The integration with the banking service stopped working and payments are not being processed.",
-    "The system is extremely slow when we try to approve purchase orders."
+
+N_ROWS = 300
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+OUTPUT_PATH = DATA_DIR / "tickets_train.csv"
+
+
+# -----------------------
+# Catálogos en ESPAÑOL
+# -----------------------
+
+CLIENTES = [
+    "Cliente Andes",
+    "Cliente Pacífico",
+    "Cliente Caribe",
+    "Banco Aurora",
+    "Retail Nova",
+    "Finanzas Alpha",
+    "Logística Sur",
+    "TecnoCloud",
+    "SaludNet",
+    "EduTech Global",
 ]
 
-EVOLUTIVE_TEMPLATES = [
-    "We need a new dashboard to monitor monthly KPIs for our projects.",
-    "The client is asking for an export to Excel for the contracts report.",
-    "We would like to add a filter by project manager in the main view.",
-    "We need a new API endpoint to read contract status from an external system.",
-    "We want to schedule automatic email summaries of open incidents every Monday."
+PROYECTOS = [
+    "Portal de Pagos",
+    "Módulo de Facturación",
+    "App de Soporte",
+    "Tablero de KPIs",
+    "Portal de Proveedores",
+    "BI Ejecutivo",
+    "Integración ERP",
+    "App Móvil Clientes",
+    "Gestión de Contratos",
+    "API de Notificaciones",
 ]
 
-NEGATIVE_INTENSIFIERS = [
-    "The client is very frustrated and angry about this issue.",
-    "They say this situation is unacceptable and they are considering leaving the service.",
-    "They have already complained several times and nothing has been solved.",
+CANALES = ["correo", "portal", "whatsapp"]
+
+TEXTOS_CORRECTIVOS = [
+    "Desde la última actualización el módulo de facturación devuelve error 500 al generar las facturas.",
+    "La pantalla de reportes se queda en blanco cuando filtramos por rango de fechas.",
+    "Los usuarios no pueden iniciar sesión, el sistema muestra credenciales inválidas aunque son correctas.",
+    "El botón de exportar a Excel no descarga el archivo y no muestra mensaje de error.",
+    "El portal está muy lento, las páginas tardan más de 10 segundos en cargar.",
+    "Al aprobar una orden de compra, el sistema se queda congelado y debemos reiniciar.",
+    "Los correos de recuperación de contraseña no están llegando a los clientes.",
+    "El menú principal desaparece cuando se abre el módulo de contratos.",
+    "Los datos de ventas diarios no se actualizan desde hace dos días.",
+    "El dashboard de indicadores muestra totales diferentes a los del reporte detallado.",
 ]
 
-NEUTRAL_ADDITIONS = [
-    "The client would like this to be prioritized next sprint.",
-    "They mentioned this is important but not blocking production.",
-    "They understand it may take some time, but want visibility on the roadmap.",
+TEXTOS_EVOLUTIVOS = [
+    "El cliente solicita agregar un filtro por sucursal en el tablero de KPIs para segmentar mejor la información.",
+    "Nos piden incluir un resumen ejecutivo con gráficos en el informe mensual descargable en PDF.",
+    "Requieren integrar el módulo de facturación con un nuevo proveedor de pagos en línea.",
+    "El equipo comercial solicita una vista móvil optimizada para revisar métricas desde el celular.",
+    "Piden agregar un campo de referencia interna en las órdenes de compra para rastrear campañas.",
+    "El cliente quiere que el sistema envíe alertas automáticas cuando el SLA esté cerca de incumplirse.",
+    "Nos solicitan habilitar autenticación con doble factor para los usuarios administradores.",
+    "El área de finanzas pide poder exportar los reportes también en formato CSV.",
+    "Plantean la creación de un panel específico para seguimiento de tickets críticos.",
+    "El cliente propone un módulo de autoservicio donde ellos mismos puedan configurar algunos reportes.",
 ]
 
-PHISHING_PHRASES = [
-    "Please click here to reset your password immediately.",
-    "Use this link to verify your account before it is deactivated.",
+TEXTOS_PHISHING = [
+    "Recibimos un correo que solicita actualizar las credenciales en un enlace sospechoso, parece un intento de phishing.",
+    "Un usuario reporta que le llegó un mensaje pidiendo datos de tarjeta de crédito para mantener el acceso a la plataforma.",
 ]
 
-PII_EMAILS = [
-    "You can contact me at john.doe@example.com.",
-    "Please reply to maria.client@company.com with the solution.",
-]
-
-PII_PHONES = [
-    "My phone number is 3112345678, call me as soon as possible.",
-    "You can reach me at 3209876543 during office hours.",
-]
+# Palabras que refuerzan sentimiento negativo / positivo
+NEGATIVAS = ["urgente", "crítico", "inaceptable", "muy molesto", "frustrado"]
+POSITIVAS = ["gracias", "excelente", "rápido", "muy contentos", "funciona bien"]
 
 
-def generate_single_row(ticket_id: int) -> dict:
-    """
-    Genera un ticket sintético con correlaciones razonables:
-    - Correctivo suele tener churn más alto y sentimiento más negativo.
-    - Más incidentes abiertos y proyectos más viejos → mayor churn.
-    """
-    # Tipo de ticket
-    ticket_type = random.choice(["Correctivo", "Evolutivo"])
+def generar_ticket(i: int) -> dict:
+    """Genera un ticket sintético en español."""
+    client = random.choice(CLIENTES)
+    project = random.choice(PROYECTOS)
+    channel = random.choice(CANALES)
 
-    # Proyecto y cliente
-    client_name = f"Client {random.randint(1, 15)}"
-    project_name = f"Project {random.randint(1, 8)}"
-    channel = random.choice(["email", "portal", "whatsapp"])
+    # Elegir tipo de ticket
+    ticket_type = random.choices(
+        ["Correctivo", "Evolutivo"],
+        weights=[0.6, 0.4],
+        k=1,
+    )[0]
 
-    # Antigüedad del proyecto (1 mes a 2 años)
-    project_age_days = random.randint(30, 730)
-
-    # Incidentes abiertos en los últimos 30 días
-    open_incidents_30d = random.randint(0, 15)
-
-    # Texto base según el tipo
+    # Base de texto según tipo
     if ticket_type == "Correctivo":
-        text = random.choice(CORRECTIVE_TEMPLATES)
+        text = random.choice(TEXTOS_CORRECTIVOS)
     else:
-        text = random.choice(EVOLUTIVE_TEMPLATES)
+        text = random.choice(TEXTOS_EVOLUTIVOS)
 
-    # Sentimiento y texto adicional
-    if ticket_type == "Correctivo" and random.random() < 0.6:
-        # más probable que estén molestos
-        extra = random.choice(NEGATIVE_INTENSIFIERS)
-        text = text + " " + extra
-        sentiment_label = random.uniform(-0.9, -0.4)
-    else:
-        extra = random.choice(NEUTRAL_ADDITIONS)
-        text = text + " " + extra
-        sentiment_label = random.uniform(-0.1, 0.5)
-
-    # Phishing
-    if random.random() < 0.15:  # 15% de probabilidad
-        text = text + " " + random.choice(PHISHING_PHRASES)
-        is_phishing = 1
-    else:
-        is_phishing = 0
-
-    # PII
+    # Inyectar algunos casos de phishing / PII
+    is_phishing = 0
     has_pii = 0
-    if random.random() < 0.3:  # 30% de probabilidad de tener email o teléfono
-        if random.random() < 0.5:
-            text = text + " " + random.choice(PII_EMAILS)
-        else:
-            text = text + " " + random.choice(PII_PHONES)
+
+    # ~5% de tickets con phishing explícito
+    if random.random() < 0.05:
+        text += " Además, el usuario adjunta el enlace sospechoso que pide usuario y contraseña."
+        text = random.choice(TEXTOS_PHISHING) + " " + text
+        is_phishing = 1
+
+    # ~10% con PII (correo / teléfono / cédula falsa)
+    if random.random() < 0.1:
+        text += " El cliente deja su correo juan.perez@example.com y el número 3201234567 para contacto."
         has_pii = 1
 
-    # Cálculo del churn (0-100) con reglas simples pero coherentes
-    # Base según tipo
+    # Ajustar sentimiento simple
+    sentimiento = 0  # neutro
     if ticket_type == "Correctivo":
-        churn_risk = random.randint(40, 80)
+        if random.random() < 0.7:
+            text += " El cliente está muy molesto y necesita solución urgente."
+            text += " " + random.choice(NEGATIVAS)
+            sentimiento = -1
     else:
-        churn_risk = random.randint(10, 60)
+        if random.random() < 0.5:
+            text += " Comentan que en general están muy contentos con la plataforma."
+            text += " " + random.choice(POSITIVAS)
+            sentimiento = 1
 
-    # Ajuste por número de incidentes
-    churn_risk += open_incidents_30d * 2
+    # Edad del proyecto e incidentes
+    project_age_days = random.randint(30, 540)          # entre 1 y 18 meses
+    open_incidents_30d = random.randint(0, 10)
 
-    # Ajuste por antigüedad (proyectos muy viejos +10)
-    if project_age_days > 365:
-        churn_risk += 10
-
-    # Ajuste por sentimiento
-    if sentiment_label < -0.5:
-        churn_risk += 15
-    elif sentiment_label < 0:
-        churn_risk += 5
-    elif sentiment_label > 0.3:
-        churn_risk -= 5
-
-    # Ajuste si hay phishing (es muy grave)
+    # Riesgo de churn aproximado (regla heurística)
+    base_churn = 20
+    base_churn += max(0, open_incidents_30d - 3) * 5
+    if ticket_type == "Correctivo":
+        base_churn += 10
+    if sentimiento == -1:
+        base_churn += 20
     if is_phishing:
-        churn_risk += 10
+        base_churn += 5
 
-    # Limitar a [0, 100]
-    churn_risk = max(0, min(100, churn_risk))
+    churn_risk = max(0, min(100, base_churn + random.randint(-5, 5)))
+
+    created_at = datetime.now() - timedelta(days=random.randint(0, 60))
 
     return {
-        "ticket_id": ticket_id,
-        "client_name": client_name,
-        "project_name": project_name,
+        "ticket_id": i,
+        "client_name": client,
+        "project_name": project,
         "channel": channel,
         "text": text,
         "ticket_type": ticket_type,
         "churn_risk": churn_risk,
         "project_age_days": project_age_days,
         "open_incidents_30d": open_incidents_30d,
-        "sentiment_label": round(sentiment_label, 3),
+        "sentiment_label": sentimiento,
         "is_phishing": is_phishing,
         "has_pii": has_pii,
+        "created_at": created_at.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
-def generate_dataset(n_rows: int = 300) -> None:
+def main() -> None:
     random.seed(42)
+    np.random.seed(42)
 
-    rows = [generate_single_row(i + 1) for i in range(n_rows)]
+    registros = [generar_ticket(i + 1) for i in range(N_ROWS)]
+    df = pd.DataFrame(registros)
 
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    with DATA_PATH.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"✅ Synthetic dataset generated at {DATA_PATH.resolve()} with {n_rows} rows.")
+    df.to_csv(OUTPUT_PATH, index=False, encoding="utf-8")
+    print(f"✅ Dataset sintético en ESPAÑOL generado en: {OUTPUT_PATH.resolve()}")
+    print(f"   Filas: {len(df)}")
 
 
 if __name__ == "__main__":
-    generate_dataset()
+    main()
