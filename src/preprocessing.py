@@ -27,9 +27,22 @@ SENTIMENT_LEXICON: Dict[str, List[str]] = {
         "rápido",
         "eficiente",
         "cumplidos",
+        "muy cumplidos",
+        "funcionó perfecto",
+        "muchas gracias",
+        "gracias por la ayuda",
+        "solucionado",
+        "resuelto",
+        "me ayudaron rápido",
+        "buena respuesta",
+        "quedó claro",
+        "quedó mejor",
+        "confiable",
+        "buena atención",
+        "buena gestión",
+        "excelente soporte",
         "qué nota",
         "súper bien",
-        "muchas gracias",
         "agradecido",
         "agradecida",
         "todo perfecto",
@@ -43,35 +56,47 @@ SENTIMENT_LEXICON: Dict[str, List[str]] = {
         "buena vibra",
         "buena energía",
         "colaboración",
-        "solucionado",
-        "resuelto",
-        "me ayudaron rápido",
-        "buena respuesta",
-        "quedó claro",
-        "quedó mejor",
-        "confiable",
-        "buena atención",
-        "buena gestión",
-        "excelente soporte",
     ],
     "negative": [
         "maluco",
         "horrible",
         "pésimo",
+        "terrible",
         "lento",
-        "muy demorado",
+        "demorado",
         "no sirve",
         "no funciona",
-        "volvió a fallar",
-        "queda colgado",
-        "no carga",
-        "vuelve y juega",
+        "dañado",
+        "bloqueado",
+        "se cae",
+        "se bloquea",
+        "traba mucho",
+        "traba demasiado",
+        "se queda pensando",
+        "incómodo",
+        "enredado",
+        "confuso",
+        "no entiendo nada",
+        "no me deja entrar",
+        "me saca del sistema",
+        "muy demorado",
+        "muy lento",
+        "fatal",
+        "una porquería",
+        "un asco",
         "me tiene mamado",
         "me tiene cansado",
-        "estoy varado",
-        "estoy colgado",
-        "enredado",
-        "esto es un complique",
+        "no aguanto más",
+        "no han solucionado",
+        "sigue igual",
+        "peor que antes",
+        "nunca funciona",
+        "cada rato falla",
+        "cada rato se cae",
+        "otra vez dañado",
+        "sigue fallando",
+        "sigue bloqueado",
+        "sigue mal",
         "quedó mal",
         "quedó peor",
         "quedó incompleto",
@@ -89,19 +114,27 @@ SENTIMENT_LEXICON: Dict[str, List[str]] = {
         "muy mala experiencia",
         "frustrante",
         "desesperante",
-        "quedé sin acceso",
-        "se cayó el sistema",
-        "se dañó otra vez",
-        "urgentemente",
-        "ya van varias veces",
-        "sigo igual",
-        "nada que ver",
     ],
     "churn_risk": [
-        "estoy cansado de esto",
-        "estoy aburrido",
         "no aguanto más",
-        "llevo semanas con esto",
+        "me toca buscar otra solución",
+        "voy a cancelar",
+        "voy a cerrar el contrato",
+        "voy a dejar de usar",
+        "voy a dejar de trabajar con ustedes",
+        "estoy pensando en irme",
+        "me va a tocar cambiar de proveedor",
+        "estoy cansado del servicio",
+        "no puedo seguir así",
+        "no me sirve el sistema",
+        "ya no confío en la herramienta",
+        "estoy perdiendo plata",
+        "estoy perdiendo dinero",
+        "estoy perdiendo clientes",
+        "estos errores me afectan mucho",
+        "esto afecta mi negocio",
+        "esto afecta mi trabajo",
+        "no veo mejora",
         "nadie me ayuda",
         "ya he escrito varias veces",
         "necesito solución hoy",
@@ -128,6 +161,7 @@ SENTIMENT_LEXICON: Dict[str, List[str]] = {
     ],
 }
 
+# Patrones para detectar frases negativas con negación directa
 NEGATION_PATTERNS = [
     r"no\s+han\s+solucionado",
     r"no\s+se\s+ha\s+solucionado",
@@ -142,7 +176,7 @@ NEGATION_PATTERNS = [
 
 class LexiconSentimentAnalyzer:
     """
-    Analizador de sentimiento basado en lexicón en español.
+    Analizador de sentimiento basado en un lexicón en español.
 
     Usa cuatro listas:
     - positive: expresiones positivas
@@ -150,7 +184,10 @@ class LexiconSentimentAnalyzer:
     - churn_risk: frases que indican riesgo de churn
     - aggressive: frases de tono agresivo / mala atención
 
-    Resultado: score entre -1 (muy negativo) y 1 (muy positivo).
+    Reglas:
+    - churn_risk y aggressive se suman al lado negativo.
+    - Manejo simple de negaciones: "no funciona", "no han solucionado nada", etc.
+    - Devuelve un puntaje entre -1 (muy negativo) y 1 (muy positivo).
     """
 
     def __init__(self) -> None:
@@ -165,8 +202,9 @@ class LexiconSentimentAnalyzer:
         Devuelve un score de -1 (muy negativo) a 1 (muy positivo).
 
         - Si no se encuentra ninguna palabra / frase, score = 0 (neutral).
-        - churn_risk y aggressive se suman al lado negativo.
-        - Maneja negaciones simples: "no ... solucionado", "no funciona", etc.
+        - churn_risk y aggressive se cuentan como negativas.
+        - Evita marcar como positivo algo que esté negado, por ejemplo:
+          "no han solucionado nada", "no quedó resuelto".
         """
         if not text:
             return 0.0
@@ -176,25 +214,31 @@ class LexiconSentimentAnalyzer:
         pos_count = 0
         neg_count = 0
 
-        # 1) Positivas, pero revisando si están negadas cerca
+        # 1) Palabras positivas, verificando si están negadas
         for w in self.positive_words:
             if w in txt:
-                pattern = r"(no|nunca|jamás|ningún|ninguna|ninguno)\s+(?:\w+\s+){0,3}" + re.escape(w)
+                # Busca patrones tipo "no ... solucionado"
+                pattern = (
+                    r"(no|nunca|jamás|ningún|ninguna|ninguno)\s+(?:\w+\s+){0,3}"
+                    + re.escape(w)
+                )
                 if re.search(pattern, txt):
-                    # Ej: "no quedó solucionado" -> contar como negativo
+                    # En contexto de negación, contabilizamos como negativo
                     neg_count += 1
                 else:
                     pos_count += 1
 
-        # 2) Negativas + churn + agresivo
+        # 2) Palabras negativas
         neg_count += sum(1 for w in self.negative_words if w in txt)
+
+        # 3) Frases de churn y agresividad también suman al lado negativo
         neg_count += sum(1 for w in self.churn_words if w in txt)
         neg_count += sum(1 for w in self.aggressive_words if w in txt)
 
-        # 3) Penalización extra para frases típicas de queja
+        # 4) Penalización extra por patrones típicos de queja con negación
         if any(re.search(p, txt) for p in NEGATION_PATTERNS):
             neg_count += 1
-            # Evitar que "solucionado"/"resuelto" se queden como positivos en estas frases
+            # Evitar que "solucionado"/"resuelto" cuenten como positivos aquí
             for w in ["solucionado", "resuelto"]:
                 if w in txt and pos_count > 0:
                     pos_count -= 1
@@ -206,6 +250,7 @@ class LexiconSentimentAnalyzer:
         score = (pos_count - neg_count) / total
         return round(score, 3)
 
+
 # ---------------------------------------------
 # FUNCIÓN GLOBAL DE SENTIMIENTO (COMPATIBILIDAD)
 # ---------------------------------------------
@@ -215,9 +260,7 @@ _global_sentiment_analyzer = LexiconSentimentAnalyzer()
 
 
 def sentiment_score(text: str) -> float:
-    """
-    Función de compatibilidad usada por otros módulos
-    (por ejemplo dashboard_app.py).
+    """Función de conveniencia para obtener el puntaje de sentimiento.
 
     Retorna un puntaje entre -1 (muy negativo) y 1 (muy positivo),
     usando el lexicón en español.
@@ -244,28 +287,31 @@ class TextPreprocessor:
         Limpia el texto:
         - Convierte a minúsculas
         - Elimina caracteres especiales
-        - Normaliza espacios múltiples
-
-        Mantiene letras con acentos y la ñ.
+        - Deja solo letras, números y espacios
         """
-        if not isinstance(text, str):
+        if text is None:
             return ""
 
-        text = text.lower()
-        # Permitimos letras (incluyendo acentos), números y espacios
-        text = re.sub(r"[^a-z0-9áéíóúñ\s]", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
+        # Normalizamos saltos de línea y espacios
+        cleaned = text.replace("\n", " ").replace("\r", " ")
+        cleaned = cleaned.strip().lower()
+
+        # Permitimos letras, números, algunos signos básicos y espacios
+        cleaned = re.sub(r"[^a-záéíóúñü0-9.,;:!?@#\-\s]", " ", cleaned)
+
+        # Colapsamos múltiples espacios
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
 
     # -------------------
-    # PIPELINE COMPLETO
+    # ANÁLISIS COMPLETO
     # -------------------
-    def process(self, text: str) -> dict:
+    def analyze(self, text: str) -> Dict[str, object]:
         """
-        Procesa el texto completo y retorna un diccionario con:
-        - cleaned_text
-        - sentiment_score (-1 a 1)
-        - word_count
+        Devuelve un diccionario con:
+        - cleaned_text: texto limpio
+        - sentiment_score: puntaje de sentimiento (-1 a 1)
+        - word_count: conteo de palabras
         """
         cleaned = self.clean_text(text)
         score = self.sentiment_analyzer.analyze(cleaned)

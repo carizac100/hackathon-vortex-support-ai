@@ -147,32 +147,28 @@ class ChurnPredictor:
         self.is_trained = True
         return self
 
-    def _to_feature_vector(self, features: Dict[str, Any]) -> np.ndarray:
-        """Convert feature dict into numpy array with fixed column order."""
-        return np.array(
-            [[float(features.get(name, 0.0)) for name in self.FEATURE_ORDER]],
-            dtype=float,
-        )
-
-    def predict(self, features: Dict[str, Any]) -> float:
+    def predict(self, features: Union[Dict[str, Any], pd.DataFrame]) -> float:
         """
-        Predict churn risk for a single ticket.
+        Predict churn risk.
 
-        Args:
-            features: dict with keys:
-                project_age_days, open_incidents_30d,
-                sentiment_label, is_phishing, word_count
-
-        Returns:
-            float: churn risk between 0 and 100.
+        features puede ser:
+        - un dict con las claves en FEATURE_ORDER
+        - un DataFrame con esas columnas
         """
         if not self.is_trained or self.model is None:
             raise RuntimeError("ChurnPredictor is not trained/loaded.")
 
-        X_vec = self._to_feature_vector(features)
-        pred = self.model.predict(X_vec)[0]
-        # Clamp to [0, 100] just in case
-        return float(max(0.0, min(100.0, pred)))
+        if isinstance(features, dict):
+            # Convertir a DataFrame de una sola fila
+            data = {k: [features.get(k, 0)] for k in self.FEATURE_ORDER}
+            X = pd.DataFrame(data)
+        else:
+            # Suponemos que ya es un DataFrame
+            X = features[self.FEATURE_ORDER]
+
+        pred = self.model.predict(X)[0]
+        # Aseguramos que quede en rango [0, 100]
+        return float(np.clip(pred, 0, 100))
 
     def save(self, path: Path) -> None:
         if self.model is None:
@@ -272,7 +268,7 @@ class ModelTrainer:
         # Persist model
         model_path = self.models_dir / "ticket_classifier.pkl"
         clf.save(model_path)
-        print(f"💾 Saved ticket classifier to {model_path.resolve()}")
+        print(f"\n💾 Saved ticket classifier to {model_path.resolve()}")
 
         metrics = {"accuracy": acc, "f1_weighted": f1}
         return clf, metrics
