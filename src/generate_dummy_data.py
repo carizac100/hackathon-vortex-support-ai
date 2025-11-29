@@ -150,18 +150,18 @@ def generar_ticket(i: int) -> dict:
             sentimiento = 1
 
     # Edad del proyecto e incidentes
-    project_age_days = random.randint(30, 540)          # entre 1 y 18 meses
-    open_incidents_30d = random.randint(0, 10)
+    project_age_days = random.randint(1, 720)          # entre 1 y 18 meses
+    open_incidents_30d = random.randint(0, 50)
 
     # Riesgo de churn aproximado (regla heurística)
     base_churn = 20
-    base_churn += max(0, open_incidents_30d - 3) * 5
-    if ticket_type == "Correctivo":
-        base_churn += 10
-    if sentimiento == -1:
-        base_churn += 20
-    if is_phishing:
-        base_churn += 5
+    base_churn += max(0, open_incidents_30d - 3) * 2
+    # Ejemplo: proyectos muy jóvenes con muchos incidentes = más riesgo
+    if project_age_days < 90 and open_incidents_30d > 10:
+        base_churn += 15
+    # Ejemplo: proyectos muy maduros con pocos incidentes = menos riesgo
+    if project_age_days > 365 and open_incidents_30d <= 3:
+        base_churn -= 10
 
     churn_risk = max(0, min(100, base_churn + random.randint(-5, 5)))
 
