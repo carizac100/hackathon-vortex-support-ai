@@ -16,8 +16,15 @@ from pathlib import Path
 
 import pandas as pd
 
-# Asegurar que src/ esté en el path
-CURRENT_DIR = Path(__file__).parent
+# ----------------------------
+# RUTAS DEL PROYECTO
+# ----------------------------
+# CURRENT_DIR = carpeta src/
+CURRENT_DIR = Path(__file__).resolve().parent
+# BASE_DIR = carpeta raíz del proyecto (hackathon-vortex-support-ai)
+BASE_DIR = CURRENT_DIR.parent
+
+# Asegurar que src/ esté en el path para los imports locales
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
@@ -30,9 +37,9 @@ from preprocessing import create_text_preprocessor
 from security import create_security_analyzer
 from nlp_pipeline import create_pipeline
 
-
-DATA_PATH = CURRENT_DIR / "data" / "tickets_train.csv"
-MODELS_DIR = CURRENT_DIR / "models"
+# ✅ Rutas correctas
+DATA_PATH = BASE_DIR / "data" / "tickets_train.csv"
+MODELS_DIR = BASE_DIR / "models"
 
 
 def populate_from_training_data(n_rows: int = 50) -> None:
@@ -136,4 +143,5 @@ def populate_from_training_data(n_rows: int = 50) -> None:
 
 
 if __name__ == "__main__":
+    # ✅ Usamos todos los registros del CSV (300)
     populate_from_training_data(300)

@@ -14,9 +14,9 @@ from nlp_pipeline import create_pipeline
 from db_utils import get_connection
 from preprocessing import sentiment_score
 from preprocessing import clean_text
-# --- CAMBIO 1: IMPORTAR EL DETECTOR DE LENGUAJE AGRESIVO ---
-from security import detect_pii, mask_pii, detect_phishing, detect_aggressive_language 
-# -------------------------------------------------------------
+# --- IMPORTS DE SEGURIDAD ---
+from security import detect_pii, mask_pii, detect_phishing, detect_aggressive_language
+# ----------------------------
 
 
 st.set_page_config(
@@ -340,7 +340,7 @@ def load_gold_data():
         conn.close()
 
         return df
-    except Exception as e:
+    except Exception:
         # Si hay error, retornar DataFrame vacío
         return pd.DataFrame()
 
@@ -362,7 +362,7 @@ def view_ticket_analyzer(pipeline):
     else:
         logo_html = '<div class="neuro-logo">🧠</div>'
 
-    # Nuevo Header profesional
+    # Header
     st.markdown(f"""
     <div class="neuro-header">
         {logo_html}
@@ -418,25 +418,46 @@ def view_ticket_analyzer(pipeline):
 
         with st.spinner("Analizando ticket..."):
             try:
-
                 model_result = {}
                 try:
-            
                     model_result = pipeline.process(
                         text=ticket_text,
                         project_age_days=int(project_age),
                         open_incidents_30d=int(open_incidents)
                     )
                 except Exception:
-                   
                     model_result = None
 
+                # --- Seguridad / PII / Phishing / Agresividad ---
                 pii = detect_pii(ticket_text)
                 masked = mask_pii(ticket_text)
                 phishing = detect_phishing(ticket_text)
-                # --- CAMBIO 2: LLAMAR AL DETECTOR DE LENGUAJE AGRESIVO ---
                 aggressive = detect_aggressive_language(ticket_text)
-                # -------------------------------------------------------------
+                # -------------------------------------------------
+
+                # Normalizar resultado de phishing
+                phishing_error = None
+                is_phishing_flag = False
+                phishing_indicators = []
+
+                if isinstance(phishing, dict):
+                    if "ERROR" in phishing:
+                        phishing_error = phishing["ERROR"].get(
+                            "message",
+                            "Error en analizador de phishing"
+                        )
+                        is_phishing_flag = False
+                    else:
+                        is_phishing_flag = bool(phishing.get("is_phishing", False))
+                        phishing_indicators = (
+                            phishing.get("found")
+                            or phishing.get("indicators")
+                            or []
+                        )
+                else:
+                    # Caso simple: booleano
+                    is_phishing_flag = bool(phishing)
+
                 sentiment = sentiment_score(ticket_text)
                 cleaned = clean_text(ticket_text)
                 word_count = len(cleaned.split())
@@ -444,25 +465,31 @@ def view_ticket_analyzer(pipeline):
                 ticket_type = getattr(model_result, "ticket_type_pred", "No disponible") if model_result else "No disponible"
                 churn_pred = getattr(model_result, "churn_risk_pred", np.nan) if model_result else np.nan
                 risk_segment = getattr(model_result, "risk_segment", "No disponible") if model_result else "No disponible"
-                recommendation_text = getattr(model_result, "recommendation_text", "No hay recomendaciones del modelo. Revisa manualmente.") if model_result else "No hay recomendaciones del modelo. Revisa manualmente."
+                recommendation_text = getattr(
+                    model_result,
+                    "recommendation_text",
+                    "No hay recomendaciones del modelo. Revisa manualmente."
+                ) if model_result else "No hay recomendaciones del modelo. Revisa manualmente."
                 cleaned_text_from_model = getattr(model_result, "cleaned_text", cleaned) if model_result else cleaned
 
                 st.markdown("---")
                 st.markdown("### 📋 Resultados del Análisis")
 
-    
-                # --- CAMBIO 3: ACTUALIZAR ALERTA GENERAL DE SEGURIDAD ---
-                if phishing or pii or aggressive:
+                # ALERTA general de seguridad
+                if (
+                    is_phishing_flag
+                    or any(len(v) > 0 for v in pii.values())
+                    or aggressive
+                ):
                     st.markdown('<div class="danger-box">', unsafe_allow_html=True)
                     st.markdown("#### 🚨 ALERTAS DE SEGURIDAD")
-                    if phishing:
+                    if is_phishing_flag:
                         st.error("⚠️ **PHISHING DETECTADO**: Este ticket contiene patrones sospechosos de phishing")
                     if any(len(v) > 0 for v in pii.values()):
                         st.warning("⚠️ **PII DETECTADO**: El ticket contiene información personal identificable")
                     if aggressive:
                         st.error("😡 **LENGUAJE AGRESIVO DETECTADO**: El cliente utiliza un tono ofensivo o inapropiado.")
                     st.markdown('</div>', unsafe_allow_html=True)
-                # --------------------------------------------------------
 
                 col1m, col2m, col3m, col4m = st.columns(4)
 
@@ -486,13 +513,12 @@ def view_ticket_analyzer(pipeline):
                 with col3m:
                     sentiment_emoji = "😠" if sentiment < -0.3 else ("😐" if sentiment < 0.3 else "😊")
                     sentiment_label = "Negativo" if sentiment < -0.3 else ("Neutral" if sentiment < 0.3 else "Positivo")
-                
+
                     st.metric(
                         "Puntaje de Sentimiento",
                         value=f"{sentiment:.2f}",
-                        delta=f"{sentiment_emoji}  {sentiment_label}" 
+                        delta=f"{sentiment_emoji}  {sentiment_label}"
                     )
-                    
 
                 with col4m:
                     st.metric(
@@ -500,14 +526,16 @@ def view_ticket_analyzer(pipeline):
                         word_count
                     )
 
-                # Recomendaciones (card)
+                # Recomendaciones
                 st.markdown("---")
                 st.markdown("### 💡 Recomendaciones")
-                
-                # --- CAMBIO 3: AGREGAR ALERTA DE AGRESIVIDAD A RECOMENDACIONES ---
+
                 if aggressive:
-                    st.error("😡 **PROTOCOLO DE CONDUCTA:** Debido al **lenguaje agresivo**, aplica el protocolo de escalamiento de comportamiento. Mantén la calma y usa un tono profesional y empático para desescalar.")
-                # ------------------------------------------------------------------
+                    st.error(
+                        "😡 **PROTOCOLO DE CONDUCTA:** Debido al **lenguaje agresivo**, "
+                        "aplica el protocolo de escalamiento de comportamiento. "
+                        "Mantén la calma y usa un tono profesional y empático para desescalar."
+                    )
 
                 if risk_segment == "Alto":
                     st.markdown('<div class="danger-box">', unsafe_allow_html=True)
@@ -519,11 +547,10 @@ def view_ticket_analyzer(pipeline):
                 st.markdown(recommendation_text.replace('\n', '\n\n'))
                 st.markdown('</div>', unsafe_allow_html=True)
 
-    
                 st.markdown("---")
                 st.markdown("### 🔎 Detalle del Análisis")
 
-                tab1, tab2, tab3 = st.tabs(["Resumen", "Seguridad (PII, Phishing, Agresividad)", "Texto y Preprocesamiento"]) # Actualizar nombre de pestaña
+                tab1, tab2, tab3 = st.tabs(["Resumen", "Seguridad (PII, Phishing, Agresividad)", "Texto y Preprocesamiento"])
 
                 with tab1:
                     st.markdown("#### ✅ Resumen General")
@@ -532,12 +559,10 @@ def view_ticket_analyzer(pipeline):
                     st.write(f"- **Riesgo de churn:** {churn_display} ({risk_segment})")
                     st.write(f"- **Sentimiento (score):** {sentiment:.3f} — {sentiment_label}")
                     st.write(f"- **Longitud (palabras):** {word_count}")
-                    st.write(f"- **Phishing detectado:** {'Sí' if phishing else 'No'}")
-                    # --- CAMBIO 4: AGREGAR RESULTADO DE AGRESIVIDAD AL RESUMEN ---
+                    st.write(f"- **Phishing detectado:** {'Sí' if is_phishing_flag else 'No'}")
                     st.write(f"- **Lenguaje Agresivo:** {'Sí' if aggressive else 'No'}")
-                    # -------------------------------------------------------------
-                    if phishing:
-                        st.write(f"- **Indicadores de phishing encontrados:** {', '.join(phishing.get('found'))}")
+                    if is_phishing_flag and phishing_indicators:
+                        st.write(f"- **Indicadores de phishing encontrados:** {', '.join(phishing_indicators)}")
 
                 with tab2:
                     st.markdown("#### 🔒 PII Detectado")
@@ -545,19 +570,26 @@ def view_ticket_analyzer(pipeline):
                     st.json(pii)
 
                     st.markdown("#### 🔐 PII Enmascarado")
-                    # Mostrar el texto en una card con scroll si es largo
                     st.text_area("Texto enmascarado:", masked, height=150, disabled=True)
 
                     st.markdown("#### 🐟 Resultado de Phishing")
-                    st.json(phishing)
-                    
-                    # --- CAMBIO 5: AGREGAR DETALLE DE LENGUAJE AGRESIVO ---
+                    if phishing_error:
+                        st.info(
+                            "No se pudo ejecutar el análisis avanzado de phishing en este ticket. "
+                            "Para este caso asumimos que **no es phishing**."
+                        )
+                        st.code(phishing_error)
+                    else:
+                        st.json(phishing)
+
                     st.markdown("#### 😡 Resultado de Lenguaje Agresivo")
                     if aggressive:
-                        st.error("El detector encontró patrones de lenguaje inapropiado o agresivo. **Acción requerida: Aplicar protocolo de conducta.**")
+                        st.error(
+                            "El detector encontró patrones de lenguaje inapropiado o agresivo. "
+                            "**Acción requerida: Aplicar protocolo de conducta.**"
+                        )
                     else:
                         st.success("No se detectó lenguaje agresivo.")
-                    # --------------------------------------------------------
 
                 with tab3:
                     st.markdown("#### 🧹 Texto Limpio / Tokenización")
@@ -821,7 +853,6 @@ def view_churn_factors():
         # Importancia de características (hardcoded del modelo)
         st.markdown("### 📊 Importancia de Variables en Predicción de Churn")
 
-        # Estos valores vienen del entrenamiento
         importance_data = {
             'Variable': [
                 'Sentimiento del Cliente',
@@ -842,7 +873,6 @@ def view_churn_factors():
 
         importance_df = pd.DataFrame(importance_data)
 
-        # Gráfico de importancia
         fig = px.bar(
             importance_df,
             x='Importancia',
@@ -856,7 +886,6 @@ def view_churn_factors():
         fig.update_layout(showlegend=False, height=400, xaxis_title="Importancia Relativa")
         st.plotly_chart(fig, use_container_width=True)
 
-        # Tabla con descripciones
         st.markdown("### 📝 Interpretación de Factores")
 
         for _, row in importance_df.iterrows():
@@ -865,13 +894,11 @@ def view_churn_factors():
 
         st.markdown("---")
 
-        # Análisis de correlaciones
         st.markdown("### 🔗 Análisis de Correlaciones")
 
         col1, col2 = st.columns(2)
 
         with col1:
-            # Churn vs Sentimiento
             st.markdown("#### Churn vs Sentimiento")
 
             fig = px.scatter(
@@ -893,7 +920,6 @@ def view_churn_factors():
             st.info("📌 **Insight:** Sentimiento negativo correlaciona fuertemente con mayor churn")
 
         with col2:
-            # Churn por tipo de ticket
             st.markdown("#### Distribución de Churn por Tipo")
 
             fig = px.box(
@@ -912,7 +938,6 @@ def view_churn_factors():
 
             st.info("📌 **Insight:** Tickets correctivos tienden a tener mayor riesgo")
 
-        # Recomendaciones para Account Managers
         st.markdown("---")
         st.markdown("### 💡 Recomendaciones para Account Managers")
 
