@@ -11,9 +11,15 @@ import base64
 sys.path.insert(0, str(Path(__file__).parent))
 
 from nlp_pipeline import create_pipeline
-from db_utils import get_connection
+from db_utils import (
+    get_connection,
+    insert_raw_ticket,
+    insert_core_ticket,
+    insert_gold_prediction,
+)
 from preprocessing import sentiment_score
 from preprocessing import clean_text
+from generate_dummy_data import CLIENTES
 # --- IMPORTS DE SEGURIDAD ---
 from security import detect_pii, mask_pii, detect_phishing, detect_aggressive_language
 # ----------------------------
@@ -394,6 +400,15 @@ def view_ticket_analyzer(pipeline):
 
     with col2:
         st.markdown("**Información del Proyecto:**")
+
+        # Empresa / Cliente asociado
+        client_name = st.selectbox(
+            "Empresa / Cliente:",
+            options=CLIENTES,
+            index=0,
+            help="Empresa a la que está asociado este proyecto"
+        )
+
         project_age = st.number_input(
             "Antigüedad del proyecto (días):",
             min_value=1,
@@ -458,6 +473,19 @@ def view_ticket_analyzer(pipeline):
                     # Caso simple: booleano
                     is_phishing_flag = bool(phishing)
 
+                # ¿Hay PII detectada?
+                has_pii_flag = False
+                if isinstance(pii, dict):
+                    try:
+                        has_pii_flag = any(len(v) > 0 for v in pii.values())
+                    except Exception:
+                        has_pii_flag = False
+                else:
+                    try:
+                        has_pii_flag = bool(pii)
+                    except Exception:
+                        has_pii_flag = False
+
                 sentiment = sentiment_score(ticket_text)
                 cleaned = clean_text(ticket_text)
                 word_count = len(cleaned.split())
@@ -472,20 +500,52 @@ def view_ticket_analyzer(pipeline):
                 ) if model_result else "No hay recomendaciones del modelo. Revisa manualmente."
                 cleaned_text_from_model = getattr(model_result, "cleaned_text", cleaned) if model_result else cleaned
 
+                # --- Guardar ticket en la base de datos ---
+                try:
+                    ticket_id = insert_raw_ticket(
+                        client_name=client_name,
+                        project_name="Proyecto actual",
+                        channel="Plataforma",
+                        original_text=ticket_text,
+                    )
+
+                    insert_core_ticket(
+                        ticket_id=ticket_id,
+                        cleaned_text=cleaned_text_from_model,
+                        is_phishing=bool(is_phishing_flag),
+                        has_pii=bool(has_pii_flag),
+                        sentiment_score=float(sentiment),
+                        word_count=int(word_count),
+                    )
+
+                    if model_result is not None:
+                        churn_value = float(churn_pred) if not pd.isna(churn_pred) else 0.0
+                        insert_gold_prediction(
+                            ticket_id=ticket_id,
+                            ticket_type_pred=str(ticket_type),
+                            churn_risk_pred=churn_value,
+                            risk_segment=str(risk_segment),
+                            recommendation_text=recommendation_text,
+                        )
+
+                    st.success(f"💾 Ticket guardado con ID #{ticket_id} para el cliente **{client_name}**")
+                except Exception as db_err:
+                    st.warning(f"⚠️ El ticket se analizó, pero no se pudo guardar en la base de datos: {db_err}")
+
                 st.markdown("---")
                 st.markdown("### 📋 Resultados del Análisis")
 
                 # ALERTA general de seguridad
                 if (
                     is_phishing_flag
-                    or any(len(v) > 0 for v in pii.values())
+                    or has_pii_flag
                     or aggressive
                 ):
                     st.markdown('<div class="danger-box">', unsafe_allow_html=True)
                     st.markdown("#### 🚨 ALERTAS DE SEGURIDAD")
                     if is_phishing_flag:
                         st.error("⚠️ **PHISHING DETECTADO**: Este ticket contiene patrones sospechosos de phishing")
-                    if any(len(v) > 0 for v in pii.values()):
+                    if has_pii_flag:
                         st.warning("⚠️ **PII DETECTADO**: El ticket contiene información personal identificable")
                     if aggressive:
                         st.error("😡 **LENGUAJE AGRESIVO DETECTADO**: El cliente utiliza un tono ofensivo o inapropiado.")
@@ -544,7 +604,7 @@ def view_ticket_analyzer(pipeline):
                 else:
                     st.markdown('<div class="success-box">', unsafe_allow_html=True)
 
-                st.markdown(recommendation_text.replace('\n', '\n\n'))
+                st.markdown(recommendation_text.replace('\\n', '\\n\\n'))
                 st.markdown('</div>', unsafe_allow_html=True)
 
                 st.markdown("---")
@@ -599,7 +659,7 @@ def view_ticket_analyzer(pipeline):
                     st.text_area("Texto original:", ticket_text, height=150, disabled=True)
 
                     st.markdown("#### 💬 Sentimiento (detalle)")
-                    st.json(sentiment)
+                    st.write(sentiment)
 
             except Exception as e:
                 import traceback
@@ -797,8 +857,14 @@ def view_data_analytics():
         # Churn por canal
         col1, col2 = st.columns(2)
 
+
         with col1:
             st.markdown("### 📱 Churn Promedio por Canal")
+
+            # 🔧 Unificar canal antiguo → nuevo
+            df['channel'] = df['channel'].replace({'dashboard': 'Plataforma'})
+
+            # 🔍 Calcular churn promedio correctamente
             channel_churn = df.groupby('channel')['churn_risk_pred'].mean().sort_values(ascending=False)
 
             fig = px.bar(
